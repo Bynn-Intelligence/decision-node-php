@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # The conformance suite commit this SDK is tested against. Change it here
+  # only; the conformance job checks out exactly this commit.
+  CONFORMANCE_REF: ded73f8b399be0d446964b7277d77ba5f7262752
+
+jobs:
+  unit:
+    name: Unit tests (PHP ${{ matrix.php }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.2', '8.3', '8.4']
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: curl, json
+          coverage: none
+      - run: composer update --no-interaction --no-progress --prefer-dist
+      - run: vendor/bin/phpunit --testsuite unit
+      - run: vendor/bin/phpstan analyse --no-progress --memory-limit=512M
+
+  lowest:
+    name: Unit tests (lowest dependencies)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '8.2'
+          extensions: curl, json
+          coverage: none
+      - run: composer update --no-interaction --no-progress --prefer-dist --prefer-lowest
+      - run: vendor/bin/phpunit --testsuite unit
+
+  conformance:
+    name: Conformance suite (PHP ${{ matrix.php }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.2', '8.4']
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Check out the conformance suite
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: Bynn-Intelligence/decision-node-conformance
+          ref: ${{ env.CONFORMANCE_REF }}
+          token: ${{ secrets.DECISIONNODE_CONFORMANCE_TOKEN }}
+          path: conformance
+          persist-credentials: false
+
+      - name: Python for the mock server
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: curl, json
+          coverage: none
+
+      - run: composer update --no-interaction --no-progress --prefer-dist
+
+      - name: Start the mock server
+        run: |
+          python3 conformance/mock/server.py --port 0 > "$RUNNER_TEMP/mock.out" 2>&1 &
+          for _ in $(seq 1 50); do
+            line=$(head -n 1 "$RUNNER_TEMP/mock.out" 2>/dev/null || true)
+            case "$line" in
+              "listening on "*) echo "DECISIONNODE_MOCK_URL=${line#listening on }" >> "$GITHUB_ENV"; exit 0 ;;
+            esac
+            sleep 0.2
+          done
+          echo "::error::The mock server did not start."
+          cat "$RUNNER_TEMP/mock.out"
+          exit 1
+
+      - name: Run the conformance suite
+        env:
+          DECISIONNODE_CONFORMANCE_DIR: ${{ github.workspace }}/conformance
+        run: vendor/bin/phpunit --testsuite conformance
