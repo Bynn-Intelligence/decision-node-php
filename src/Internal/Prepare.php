@@ -17,22 +17,18 @@ final class Prepare
      * The questions in wire form by id.
      *
      * @param iterable<array-key, mixed>|object $questions
-     * @param bool                              $strict    write `truth` questions with the wire type `/v1/systemone` takes
      *
      * @return array<string, mixed>
      *
      * @throws \InvalidArgumentException for an empty question map
      */
-    public static function questions(iterable|object $questions, bool $strict = false): array
+    public static function questions(iterable|object $questions): array
     {
         $wire = [];
         $iterable = is_iterable($questions) ? $questions : get_object_vars($questions);
         foreach ($iterable as $id => $question) {
             if ($question instanceof Question) {
                 $question = $question->toArray();
-            }
-            if ($strict) {
-                $question = self::strictTruth($question);
             }
             $wire[(string) $id] = $question;
         }
@@ -102,17 +98,5 @@ final class Prepare
         }
 
         return Json::encode($body + $tail);
-    }
-
-    private static function strictTruth(mixed $question): mixed
-    {
-        if (is_array($question) && ($question['type'] ?? null) === 'truth') {
-            $question['type'] = 'noul';
-        } elseif ($question instanceof \stdClass && ($question->type ?? null) === 'truth') {
-            $question = clone $question;
-            $question->type = 'noul';
-        }
-
-        return $question;
     }
 }

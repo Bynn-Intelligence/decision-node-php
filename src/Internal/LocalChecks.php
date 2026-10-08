@@ -47,7 +47,6 @@ final class LocalChecks
     private const MAX_NUMBER_DECIMALS = 6;
     private const DECIDE_TYPES = ['truth', 'noul', 'choice', 'score', 'number', 'point', 'box'];
     private const UNITS = ['pixels', 'normalized'];
-    private const SYSTEMONE_TYPES = ['noul', 'choice', 'score'];
     private const MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 
     /** Blocked address ranges for image URLs given as a literal address. */
@@ -59,7 +58,7 @@ final class LocalChecks
     ];
 
     /**
-     * A decision request (`/v1/decide`, `/v1/systemone`, a batch line): the
+     * A decision request (`/v1/decide`, a batch line): the
      * body's rules, then its images, then its videos.
      *
      * @param array<string, mixed> $questions wire forms by id
@@ -70,7 +69,7 @@ final class LocalChecks
      * @throws BadRequestError|ValidationError
      * @throws \InvalidArgumentException for a video that is neither a Video nor a wire map
      */
-    public static function decision(string $model, mixed $state, array $questions, array $images, array $limits, string $profile = 'decide', array $videos = []): void
+    public static function decision(string $model, mixed $state, array $questions, array $images, array $limits, array $videos = []): void
     {
         $probe = ['model' => $model, 'state' => $state ?? '', 'questions' => (object) $questions];
         if ($images !== []) {
@@ -86,7 +85,7 @@ final class LocalChecks
         if ($state !== null && !self::sdl($state)) {
             array_push($entries, ...self::sdlEntries(['body', 'state'], self::json($state)));
         }
-        $deferred = self::questionEntries($questions, $profile, $limits, $entries, self::imageIds($images));
+        $deferred = self::questionEntries($questions, $limits, $entries, self::imageIds($images));
         // More images or videos than a request takes join the same 422, after the questions' entries.
         $most = self::positive($limits['max_images'] ?? null) ?? self::positive(self::field($limits['images'] ?? null, 'max_images')) ?? self::MAX_IMAGES;
         foreach (['images' => [$images, $most], 'videos' => [$videos, self::MAX_VIDEOS]] as $field => [$list, $limit]) {
@@ -156,7 +155,7 @@ final class LocalChecks
             }
         }
         $questions = $body['questions'] ?? [];
-        self::questions(is_object($questions) ? get_object_vars($questions) : (array) $questions, 'decide', $limits, $entries);
+        self::questions(is_object($questions) ? get_object_vars($questions) : (array) $questions, $limits, $entries);
         if (($sessions['enabled'] ?? null) === false) {
             throw self::bad(sprintf('Model %s does not serve sessions.', is_string($limits['model'] ?? null) ? $limits['model'] : ''));
         }
@@ -536,9 +535,9 @@ final class LocalChecks
      *
      * @throws BadRequestError|ValidationError
      */
-    private static function questions(array $questions, string $profile, array $limits, array $entries, ?array $imageIds = null): void
+    private static function questions(array $questions, array $limits, array $entries, ?array $imageIds = null): void
     {
-        self::raise($entries, self::questionEntries($questions, $profile, $limits, $entries, $imageIds));
+        self::raise($entries, self::questionEntries($questions, $limits, $entries, $imageIds));
     }
 
     /**
@@ -549,11 +548,11 @@ final class LocalChecks
      * @param list<array<string, mixed>> $entries
      * @param list<string>|null          $imageIds
      */
-    private static function questionEntries(array $questions, string $profile, array $limits, array &$entries, ?array $imageIds): ?BadRequestError
+    private static function questionEntries(array $questions, array $limits, array &$entries, ?array $imageIds): ?BadRequestError
     {
         $deferred = null;
         foreach ($questions as $id => $question) {
-            $found = self::question((string) $id, self::json($question), $profile, $limits, $entries, $imageIds);
+            $found = self::question((string) $id, self::json($question), $limits, $entries, $imageIds);
             $deferred ??= $found;
         }
 
@@ -584,7 +583,7 @@ final class LocalChecks
      * @param list<array<string, mixed>> $entries
      * @param list<string>|null          $imageIds
      */
-    private static function question(string $id, mixed $q, string $profile, array $limits, array &$entries, ?array $imageIds): ?BadRequestError
+    private static function question(string $id, mixed $q, array $limits, array &$entries, ?array $imageIds): ?BadRequestError
     {
         $base = ['body', 'questions', $id];
         if (!$q instanceof \stdClass) {
@@ -598,7 +597,7 @@ final class LocalChecks
 
             return null;
         }
-        if (!is_string($type) || !in_array($type, $profile === 'systemone' ? self::SYSTEMONE_TYPES : self::DECIDE_TYPES, true)) {
+        if (!is_string($type) || !in_array($type, self::DECIDE_TYPES, true)) {
             return new BadRequestError('Invalid request.', errorType: 'api_usage_error', reason: sprintf("question '%s': unknown type %s", $id, Json::encode($type)));
         }
         $loc = [...$base, $type];
@@ -619,13 +618,13 @@ final class LocalChecks
             return self::choice($id, $q, $criteria, $loc, $entries, self::positive($limits['max_choice_options'] ?? null) ?? self::MAX_CHOICE_OPTIONS);
         }
         if ($type === 'score') {
-            return self::score($q, $criteria, $loc, $entries, $profile, self::positive($limits['max_score_levels'] ?? null) ?? self::MAX_SCORE_LEVELS);
+            return self::score($q, $criteria, $loc, $entries, self::positive($limits['max_score_levels'] ?? null) ?? self::MAX_SCORE_LEVELS);
         }
         if ($type === 'point' || $type === 'box') {
             return self::place($id, $type, $q, $loc, $entries, $imageIds);
         }
 
-        // truth, and the wire name /v1/systemone takes for it
+        // truth, and its older wire name, which the API still takes in a question sent as a plain map
         if ($criteria !== null && !$criteria instanceof \stdClass) {
             $entries[] = self::entry('dict_type', [...$loc, 'criteria'], 'Input should be a valid dictionary', $criteria);
 
@@ -713,12 +712,12 @@ final class LocalChecks
     }
 
     /**
-     * Levels are a list; an object keyed "0" to "K-1" is a list on /v1/decide only.
+     * Levels are a list, or an object keyed "0" to "K-1".
      *
      * @param list<string|int>           $loc
      * @param list<array<string, mixed>> $entries
      */
-    private static function score(\stdClass $q, mixed $criteria, array $loc, array &$entries, string $profile, int $most): ?BadRequestError
+    private static function score(\stdClass $q, mixed $criteria, array $loc, array &$entries, int $most): ?BadRequestError
     {
         if ($criteria === null) {
             $entries[] = self::entry('missing', [...$loc, 'criteria'], 'Field required', $q);
@@ -728,7 +727,7 @@ final class LocalChecks
         $levels = null;
         if (is_array($criteria)) {
             $levels = $criteria;
-        } elseif ($criteria instanceof \stdClass && $profile !== 'systemone') {
+        } elseif ($criteria instanceof \stdClass) {
             $byIndex = get_object_vars($criteria);
             $keys = array_map('strval', array_keys($byIndex));
             if (self::indexKeys($keys)) {

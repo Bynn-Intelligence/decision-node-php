@@ -54,7 +54,6 @@ final class ConsistencyTest extends TestCase
             'questions' => ['q' => truth('?'), 'n' => number('How many?', 0, 50)],
             'images' => [Image::fromUrl('u', 'https://files.example.com/a.jpg'), Image::fromData('big', (string) file_get_contents(self::DIR . '3x2.png') . str_repeat("\0", 600_000))],
         ]);
-        $dn->checkRequest('systemone', ['questions' => ['c' => choice('?', ['a', 'b'])]]);
         $dn->checkRequest('batches.create', ['requests' => [['custom_id' => 'a', 'questions' => ['q' => truth('?')]]]]);
 
         $refusals = [

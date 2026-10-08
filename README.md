@@ -108,7 +108,7 @@ $d['any_damage']->truth;    // 0.93
 - `confidence` is the probability that the place is right if the thing is there: for a point, that it lies on the thing; for a box, that it overlaps the true box by an intersection over union of 0.5 or more.
 - `image`, `width` and `height` name the image looked in and its size in pixels, so the answer can be drawn or converted without another lookup.
 
-Every field is always there and every number is the one the API sent. Point and box questions work in `decide`, `decideMany` and batch requests, beside any other question type; `systemone` takes neither. A request with one needs at least one image.
+Every field is always there and every number is the one the API sent. Point and box questions work in `decide`, `decideMany` and batch requests, beside any other question type. A request with one needs at least one image.
 
 Answers are read by question id, `$d['route']` or `$d->answers['route']`. An answer of a question type this SDK version does not know yet comes back as an `UnknownAnswer` with its `type` and `raw` fields. In `decide`, so does an answer of a known type whose fields are missing or of the wrong type (a choice without `probabilities`, a truth whose value is a string): the rest of the decision is read as usual. The one-question helpers `check`, `classify`, `score` and `number` promise a typed answer, so for them a missing or malformed answer is a `ServerError` (see below). Every answer class extends `Answer`.
 
@@ -123,7 +123,6 @@ Answers are read by question id, `$d['route']` or `$d->answers['route']`. An ans
 | `score($state, $instructions, $levels)` | One `score` question | `ScoreAnswer`; a `ServerError` when the answer is missing or malformed |
 | `number($state, $instructions, $min, $max, $step)` | One `number` question | `NumberAnswer`; a `ServerError` when the answer is missing or malformed |
 | `gate($action, $context)` | Whether an action should run: a `risk` score, a `touches_production` truth and an `allow`, `confirm` or `block` verdict (wording below) | `Decision` |
-| `systemone($state, $questions, $images, $videos, $model)` | One `POST /v1/systemone`, the path that takes only truth, choice and score questions and always names a model | `Decision` |
 | `models()` | `GET /v1/models` | A list of `ModelInfo` with `name`, `description`, `releaseDate` and `limits` (every other field of the entry, such as `context_tokens`, `number_max_grid_values`, `upload_max_bytes`, `sessions` and `batch`) |
 | `upload($images)` | Uploads local images whatever their size | One upload id per image |
 | `openSession(...)` | `POST /v1/sessions` | `Session` (see [Sessions](#sessions)) |
@@ -249,7 +248,7 @@ Video::of('dock', $frames, fps: 4, start: 30, end: 60);
 
 Before sending, the SDK checks the rules above and raises the API's own error without a round trip: more than 4 videos is a `ValidationError`, as the API answers it; a missing or repeated id, no frames, a time that is negative or not larger than the one before it, a media type that is not JPEG, PNG or WebP, an `fps` outside the range, a negative `start` or `end` and an `end` not after `start` are a `BadRequestError` (`api_usage_error`) with the server's message. How many frames a request may carry, each frame's bytes and size, and the token budget are the server's to judge.
 
-Videos work in `decide`, `systemone`, the one-question helpers, `gate`, `decideMany`, batch requests and `checkRequest`. Sessions take no videos. A video in its plain wire form, `['id' => 'dock', 'fps' => 2, 'frames' => [['t' => 0.0, 'media_type' => 'image/jpeg', 'data' => $base64]]]`, is accepted wherever a `Video` is.
+Videos work in `decide`, the one-question helpers, `gate`, `decideMany`, batch requests and `checkRequest`. Sessions take no videos. A video in its plain wire form, `['id' => 'dock', 'fps' => 2, 'frames' => [['t' => 0.0, 'media_type' => 'image/jpeg', 'data' => $base64]]]`, is accepted wherever a `Video` is.
 
 To turn a video file into frames, use the `dn` command line, which samples the file on your machine and sends only the frames:
 
@@ -374,7 +373,7 @@ The SDK checks every fixed rule the API documents before sending, so the server 
 | Fault | Raised as |
 |---|---|
 | A choice with no options or more than 255, a score with more than 10 levels, a truth question with neither instructions nor criteria, a number, point or box question without instructions | `BadRequestError` with the API's message and no `errorType` |
-| An unknown question type (on `systemone`, a number, point or box question too), objects and arrays nested more than 128 deep, an image fault (not JPEG, PNG or WebP, over 10 MB or 40 megapixels, an empty or repeated id, an image URL that is not `https`), a video fault (see [Videos](#videos)), an upload id given with another media type, a batch request without a valid or with a repeated `custom_id`, an empty `add`, `list` paging out of range | `BadRequestError`, `errorType` `api_usage_error` |
+| An unknown question type, objects and arrays nested more than 128 deep, an image fault (not JPEG, PNG or WebP, over 10 MB or 40 megapixels, an empty or repeated id, an image URL that is not `https`), a video fault (see [Videos](#videos)), an upload id given with another media type, a batch request without a valid or with a repeated `custom_id`, an empty `add`, `list` paging out of range | `BadRequestError`, `errorType` `api_usage_error` |
 | An image URL over 2,048 characters, with user information, on a port other than 443, or on a literal private, loopback or reserved address | `BadRequestError`, `errorType` `image_url_refused` |
 | More than 16 images or more than 4 videos in a request (a held lower image limit once `models()` has been called): one `too_long` entry for each, after the questions' entries | `ValidationError` |
 | A point or box question in a request without images, without `image` when the request has two or more, or with an `image` that is not one of the request's image ids, or `units` other than `pixels` and `normalized` | `ValidationError` with every such entry of the request in one list |
@@ -387,7 +386,7 @@ To check a request without sending it, for example while a user is still editing
 ```php
 $dn->checkRequest('decide', ['state' => $state, 'questions' => $questions, 'images' => $images, 'videos' => $videos]);
 $dn->checkRequest('openSession', ['questions' => $questions, 'window' => 16]);
-$dn->checkRequest('batches.create', ['requests' => $requests]);   // also systemone and batches.add
+$dn->checkRequest('batches.create', ['requests' => $requests]);   // also batches.add
 $session->checkFrame(frame: $reading, questions: ['abort']);
 ```
 
@@ -476,7 +475,7 @@ composer test          # unit tests
 composer analyse       # static analysis
 ```
 
-The conformance tests run the language-neutral DecisionNode conformance cases (suite 1.9) against their mock server, every case once through the blocking methods and once through their `Async` forms (sessions are blocking in both runs): set `DECISIONNODE_CONFORMANCE_DIR` to the suite's directory and run `composer conformance`. Without that variable the conformance tests fail; they never skip. CI checks the suite out at a pinned commit, set once as `CONFORMANCE_REF` in `.github/workflows/ci.yml`, and every action in the workflow is pinned to a commit SHA.
+The conformance tests run the language-neutral DecisionNode conformance cases (suite 1.10) against their mock server, every case once through the blocking methods and once through their `Async` forms (sessions are blocking in both runs): set `DECISIONNODE_CONFORMANCE_DIR` to the suite's directory and run `composer conformance`. Without that variable the conformance tests fail; they never skip. CI checks the suite out at a pinned commit, set once as `CONFORMANCE_REF` in `.github/workflows/ci.yml`, and every action in the workflow is pinned to a commit SHA.
 
 ## License
 

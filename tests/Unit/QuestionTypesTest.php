@@ -74,21 +74,12 @@ final class QuestionTypesTest extends TestCase
         self::assertSame([-3 => 0.2, '-2.5' => 0.625], $answer->probabilities);
     }
 
-    public function testSystemoneWritesTruthWithItsWireTypeAndAlwaysAModel(): void
+    public function testTruthIsSentAsTruth(): void
     {
-        $dn = $this->client([self::json(200, ['answers' => ['t' => ['type' => 'noul', 'noul' => 0.9]]])]);
-        $d = $dn->systemone('s', [
-            't' => truth('Escalate?'),
-            'w' => ['type' => 'truth', 'instructions' => 'Wire map?'],
-            'c' => choice('Where?', ['billing', 'bug']),
-        ]);
-        self::assertSame('/v1/systemone', $this->sent()->getUri()->getPath());
-        $body = $this->sentBody();
-        self::assertSame('decisionnode-latest', $body->model);
-        self::assertSame('noul', $body->questions->t->type);
-        self::assertSame('noul', $body->questions->w->type);
-        self::assertSame('choice', $body->questions->c->type);
-        self::assertSame(0.9, $d['t']->truth);
+        $dn = $this->client([self::truthBody(id: 't')]);
+        $dn->decide('s', ['t' => truth('Escalate?'), 'c' => choice('Where?', ['billing', 'bug'])]);
+        self::assertSame('/v1/decide', $this->sent()->getUri()->getPath());
+        self::assertSame('truth', $this->sentBody()->questions->t->type);
     }
 
     public function testSessionCloseCodes(): void

@@ -422,7 +422,7 @@ final class Batches
         $questions = Prepare::questions($questions);
         $images = Prepare::images(is_iterable($images) ? $images : null);
         $videos = Prepare::videos(is_iterable($videos) ? $videos : null);
-        LocalChecks::decision($model, $state, $questions, $images, $this->held->limits($model), videos: $videos);
+        LocalChecks::decision($model, $state, $questions, $images, $this->held->limits($model), $videos);
 
         $tail = $args;
         unset($tail['custom_id'], $tail['state'], $tail['questions'], $tail['images'], $tail['videos'], $tail['model']);

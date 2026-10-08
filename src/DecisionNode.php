@@ -230,34 +230,6 @@ final class DecisionNode
     }
 
     /**
-     * Asks the questions on `POST /v1/systemone`, the path that takes only the
-     * truth, choice and score types and always names a model.
-     *
-     * @param iterable<array-key, Question|array<string, mixed>|object>|object $questions by question id
-     * @param iterable<Image|array<string, mixed>>|null $images up to 16
-     * @param iterable<Video|array<string, mixed>>|null $videos up to 4, each as frames with their times
-     */
-    public function systemone(mixed $state = '', iterable|object $questions = [], ?iterable $images = null, ?iterable $videos = null, ?string $model = null): Decision
-    {
-        return $this->systemoneAsync($state, $questions, $images, $videos, $model)->wait();
-    }
-
-    /**
-     * @param iterable<array-key, Question|array<string, mixed>|object>|object $questions
-     * @param iterable<Image|array<string, mixed>>|null $images
-     * @param iterable<Video|array<string, mixed>>|null $videos
-     *
-     * @return PromiseInterface resolves with a Decision
-     */
-    public function systemoneAsync(mixed $state = '', iterable|object $questions = [], ?iterable $images = null, ?iterable $videos = null, ?string $model = null): PromiseInterface
-    {
-        [$questions, $images, $videos, $model] = $this->checked($state, Prepare::questions($questions, strict: true), Prepare::images($images), Prepare::videos($videos), $model, 'systemone');
-
-        return $this->call('/v1/systemone', $state, $questions, $images, $videos, $model)
-            ->then(static fn (array $result): Decision => self::decision($result));
-    }
-
-    /**
      * Checks a decision request before anything is sent and resolves its model.
      *
      * @param array<string, mixed> $questions
@@ -266,10 +238,10 @@ final class DecisionNode
      *
      * @return array{array<string, mixed>, list<mixed>, list<mixed>, string}
      */
-    private function checked(mixed $state, array $questions, array $images, array $videos, ?string $model, string $profile = 'decide'): array
+    private function checked(mixed $state, array $questions, array $images, array $videos, ?string $model): array
     {
         $model = self::nonEmpty($model) ?? $this->model;
-        LocalChecks::decision($model, $state, $questions, $images, $this->held->limits($model), $profile, $videos);
+        LocalChecks::decision($model, $state, $questions, $images, $this->held->limits($model), $videos);
 
         return [$questions, $images, $videos, $model];
     }
@@ -746,7 +718,7 @@ final class DecisionNode
      *
      *     $dn->checkRequest('decide', ['state' => $state, 'questions' => $questions, 'images' => $images, 'videos' => $videos]);
      *
-     * `$method` is `decide`, `systemone`, `openSession`, `batches.create` or
+     * `$method` is `decide`, `openSession`, `batches.create` or
      * `batches.add` (the snake_case names are accepted too); `$request` holds
      * that call's arguments by name. A session frame is checked with
      * {@see Session::checkFrame()}.
@@ -775,11 +747,10 @@ final class DecisionNode
 
         match (strtolower(str_replace(['_', '.'], '', $method))) {
             'decide' => $this->checked($args['state'] ?? '', Prepare::questions($questions), Prepare::images($images), Prepare::videos($videos), $model),
-            'systemone' => $this->checked($args['state'] ?? '', Prepare::questions($questions, strict: true), Prepare::images($images), Prepare::videos($videos), $model, 'systemone'),
             'opensession' => $this->sessionBody($questions, $args['state'] ?? null, $args['instructions'] ?? null, $model, $args['window'] ?? null, $args['ttlSeconds'] ?? null),
             'batchescreate' => $this->batches->check(is_iterable($requests) ? $requests : []),
             'batchesadd' => $this->batches->check(is_iterable($requests) ? $requests : [], requireOne: true),
-            default => throw new \InvalidArgumentException(sprintf('checkRequest takes decide, systemone, openSession, batches.create or batches.add, got "%s".', $method)),
+            default => throw new \InvalidArgumentException(sprintf('checkRequest takes decide, openSession, batches.create or batches.add, got "%s".', $method)),
         };
     }
 

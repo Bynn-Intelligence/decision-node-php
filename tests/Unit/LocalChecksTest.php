@@ -128,12 +128,6 @@ final class LocalChecksTest extends TestCase
             }
         }
         try {
-            $dn->systemone('s', ['n' => number('How many?')]);
-            self::fail('no error');
-        } catch (BadRequestError $e) {
-            self::assertSame('api_usage_error', $e->errorType);
-        }
-        try {
             $dn->decide(['deep' => self::nest(128)], ['q' => truth('?')]);
             self::fail('no error');
         } catch (BadRequestError $e) {

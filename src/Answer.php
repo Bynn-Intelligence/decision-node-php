@@ -35,8 +35,8 @@ abstract class Answer
         // A known type whose fields are missing or of the wrong type is
         // returned like an unknown type, with its raw fields: one odd answer
         // does not fail the whole decision.
-        // `noul` is the wire name `/v1/systemone` uses for a truth answer; it
-        // is read into a TruthAnswer like `truth`.
+        // An answer under the truth type's older name, which the API sends
+        // for a question sent under that name, is read into a TruthAnswer.
         return match (true) {
             $type === 'truth' && TruthAnswer::wellFormed($raw) => new TruthAnswer($raw),
             $type === 'noul' && TruthAnswer::wellFormed($raw, 'noul') => new TruthAnswer($raw, 'noul'),

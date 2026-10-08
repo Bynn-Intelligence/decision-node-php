@@ -292,15 +292,15 @@ final class VideoTest extends TestCase
         self::assertSame([], $d->warnings);
     }
 
-    public function testHelpersAndSystemoneTakeVideos(): void
+    public function testHelpersTakeVideos(): void
     {
         $video = Video::of('dock', [VideoFrame::fromData(0, self::jpeg())]);
-        $dn = $this->client([self::truthBody(id: 'check'), self::json(200, ['answers' => ['q' => ['type' => 'noul', 'noul' => 0.2]]])]);
+        $dn = $this->client([self::truthBody(id: 'check'), self::json(200, ['answers' => ['number' => ['type' => 'number', 'number' => 2, 'expected' => 2.1, 'confidence' => 0.8, 'probabilities' => ['2' => 0.8]]]])]);
         $dn->check('s', 'Does a person fall?', videos: [$video]);
-        $dn->systemone('s', ['q' => truth('?')], videos: [$video]);
+        $dn->number('s', 'How many forklifts pass the door?', max: 50, videos: [$video]);
 
         self::assertSame('dock', $this->sentBody(0)->videos[0]->id);
-        self::assertSame('/v1/systemone', $this->sent(1)->getUri()->getPath());
+        self::assertSame('/v1/decide', $this->sent(1)->getUri()->getPath());
         self::assertSame('dock', $this->sentBody(1)->videos[0]->id);
     }
 

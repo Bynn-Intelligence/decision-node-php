@@ -26,7 +26,7 @@ final class TruthAnswer extends Answer
 
     /**
      * @param array<array-key, mixed> $raw
-     * @param string                  $field the field holding the value: `truth`, or the wire name `/v1/systemone` uses
+     * @param string                  $field the field holding the value: `truth`, or the type's older name
      */
     public function __construct(array $raw, string $field = 'truth')
     {

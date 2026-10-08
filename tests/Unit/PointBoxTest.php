@@ -172,19 +172,6 @@ final class PointBoxTest extends TestCase
         }
     }
 
-    public function testSystemoneRefusesPointAsAnUnknownType(): void
-    {
-        $dn = $this->client([]);
-        try {
-            $dn->systemone(images: [self::belt()], questions: ['pick' => point('?')]);
-            self::fail('no error');
-        } catch (BadRequestError $e) {
-            self::assertSame('api_usage_error', $e->errorType);
-            self::assertSame("question 'pick': unknown type \"point\"", $e->reason);
-        }
-        self::assertSame([], $this->history);
-    }
-
     public function testBatchLineAndCheckRequest(): void
     {
         $dn = $this->client([]);
