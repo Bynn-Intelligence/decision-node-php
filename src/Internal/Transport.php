@@ -19,6 +19,7 @@ interface Transport
     /**
      * @param float|null $delay   seconds to wait before sending a retry; null on the first attempt
      * @param float      $timeout seconds the whole attempt may take, above 0
+     * @param bool       $bare    send exactly the request's own headers, none of the HTTP client's defaults
      */
-    public function send(RequestInterface $request, ?float $delay, float $timeout): PromiseInterface;
+    public function send(RequestInterface $request, ?float $delay, float $timeout, bool $bare = false): PromiseInterface;
 }

@@ -32,21 +32,22 @@ final class Retry
      * so a server can never stall a call for longer than that.
      *
      * @param array<string, string> $headers names in lower case
+     * @param float|null            $cap     the longest wait returned, in seconds; null for none
      */
-    public static function after(array $headers): ?float
+    public static function after(array $headers, ?float $cap = self::MAX_SERVER_WAIT): ?float
     {
         $ms = isset($headers['retry-after-ms']) ? trim($headers['retry-after-ms']) : null;
         if ($ms !== null && is_numeric($ms)) {
-            return self::cap((float) $ms / 1000.0);
+            return self::cap((float) $ms / 1000.0, $cap);
         }
         $seconds = isset($headers['retry-after']) ? trim($headers['retry-after']) : null;
         if ($seconds !== null && $seconds !== '') {
             if (is_numeric($seconds)) {
-                return self::cap((float) $seconds);
+                return self::cap((float) $seconds, $cap);
             }
             $at = self::httpDate($seconds);
             if ($at !== null) {
-                return self::cap((float) ($at - time()));
+                return self::cap((float) ($at - time()), $cap);
             }
         }
 
@@ -69,9 +70,11 @@ final class Retry
         return null;
     }
 
-    private static function cap(float $seconds): float
+    private static function cap(float $seconds, ?float $cap): float
     {
-        return min(self::MAX_SERVER_WAIT, max(0.0, $seconds));
+        $seconds = max(0.0, $seconds);
+
+        return $cap === null ? $seconds : min($cap, $seconds);
     }
 
     /**

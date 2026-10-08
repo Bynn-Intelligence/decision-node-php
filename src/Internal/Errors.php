@@ -15,6 +15,7 @@ use Bynn\DecisionNode\Exception\PermissionDeniedError;
 use Bynn\DecisionNode\Exception\RateLimitError;
 use Bynn\DecisionNode\Exception\RefusalError;
 use Bynn\DecisionNode\Exception\ServerError;
+use Bynn\DecisionNode\Exception\SessionLimitError;
 use Bynn\DecisionNode\Exception\ValidationError;
 use Bynn\DecisionNode\Safety;
 
@@ -90,6 +91,9 @@ final class Errors
         if ($status === 422) {
             return new ValidationError(...$fields + ['entries' => $entries]);
         }
+        if ($status === 429 && $errorType === 'session_limit_exceeded') {
+            return new SessionLimitError(...$fields + ['retryAfter' => Retry::after($headers)]);
+        }
         if ($status === 429) {
             return new RateLimitError(...$fields + ['retryAfter' => Retry::after($headers)]);
         }
@@ -103,5 +107,20 @@ final class Errors
         // Every other status, 3xx included (redirects are never followed): the
         // base class with the status.
         return new DecisionNodeError(...$fields);
+    }
+
+    /**
+     * The `detail.error_type` of an error body, or null.
+     */
+    public static function errorType(string $text): ?string
+    {
+        try {
+            $body = Json::decode($text);
+        } catch (\JsonException) {
+            return null;
+        }
+        $detail = is_array($body) ? ($body['detail'] ?? null) : null;
+
+        return is_array($detail) && is_string($detail['error_type'] ?? null) ? $detail['error_type'] : null;
     }
 }

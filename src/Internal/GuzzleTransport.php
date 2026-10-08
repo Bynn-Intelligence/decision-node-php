@@ -178,7 +178,7 @@ final class GuzzleTransport implements Transport
         }
     }
 
-    public function send(RequestInterface $request, ?float $delay, float $timeout): PromiseInterface
+    public function send(RequestInterface $request, ?float $delay, float $timeout, bool $bare = false): PromiseInterface
     {
         /** @var TransferStats|null $stats */
         $stats = null;
@@ -209,6 +209,11 @@ final class GuzzleTransport implements Transport
             $curl = is_array($curl) ? $curl : [];
             $curl[\CURLOPT_FOLLOWLOCATION] = false;
             $options[RequestOptions::CURL] = $curl;
+        }
+        if ($bare) {
+            // No default header of the HTTP client (such as its User-Agent):
+            // a storage PUT carries exactly the headers the API returned.
+            $options[RequestOptions::HEADERS] = null;
         }
         if ($delay !== null) {
             // The wait between attempts is Guzzle's own `delay` option, so it
