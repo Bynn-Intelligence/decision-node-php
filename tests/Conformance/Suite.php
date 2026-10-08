@@ -630,6 +630,16 @@ final class Suite
                         $args[(string) $name] = self::decode($value, $ctx);
                     }
                 }
+                if (!empty($step->check)) {
+                    try {
+                        self::sessionOf($ctx, $step->send->session)->checkFrame(...$args);
+                        $checked = new Checked();
+                    } catch (DecisionNodeError|\InvalidArgumentException $error) {
+                        $checked = $error;
+                    }
+                    self::checkOutcome($step->outcome ?? (object) ['result' => 'checked'], $checked, $where . '.outcome');
+                    continue;
+                }
                 try {
                     self::sessionOf($ctx, $step->send->session)->send(...$args);
                 } catch (DecisionNodeError|\InvalidArgumentException $error) {
@@ -819,6 +829,9 @@ final class Suite
         if (isset($spec->max_retries)) {
             $args['maxRetries'] = (int) $spec->max_retries;
         }
+        if (isset($spec->upload_timeout)) {
+            $args['uploadTimeout'] = (float) $spec->upload_timeout;
+        }
         if (isset($spec->inline_threshold)) {
             $args['inlineThreshold'] = (int) $spec->inline_threshold;
         }
@@ -892,6 +905,13 @@ final class Suite
         if ($name === 'supervise') {
             return self::supervise($client, $args);
         }
+        if (!empty($call->check)) {
+            // Not made: the same arguments go to the public check, which
+            // sends and uploads nothing and returns nothing when clean.
+            $client->checkRequest((string) $call->method, $args);
+
+            return new Checked();
+        }
 
         if ($async && method_exists($target, $method . 'Async')) {
             $result = $target->{$method . 'Async'}(...$args);
@@ -952,6 +972,14 @@ final class Suite
                         return self::ref((string) $a, $ctx);
                     case '$text':
                         return str_repeat((string) $a->repeat, (int) $a->times);
+                    case '$list':
+                        // count copies of item, {i} in every string replaced by the index
+                        $out = [];
+                        for ($i = 0; $i < (int) $a->count; ++$i) {
+                            $out[] = self::decode(self::index($a->item, $i), $ctx);
+                        }
+
+                        return $out;
                     case '$nest':
                         // the value inside depth arrays: [[[...value...]]]
                         $out = self::decode($a->value, $ctx);
@@ -981,6 +1009,26 @@ final class Suite
         }
         if (is_array($value)) {
             return array_map(static fn (mixed $v): mixed => self::decode($v, $ctx), $value);
+        }
+
+        return $value;
+    }
+
+    private static function index(mixed $value, int $i): mixed
+    {
+        if (is_string($value)) {
+            return str_replace('{i}', (string) $i, $value);
+        }
+        if ($value instanceof \stdClass) {
+            $out = new \stdClass();
+            foreach (get_object_vars($value) as $k => $v) {
+                $out->{$k} = self::index($v, $i);
+            }
+
+            return $out;
+        }
+        if (is_array($value)) {
+            return array_map(static fn (mixed $v): mixed => self::index($v, $i), $value);
         }
 
         return $value;
@@ -1174,6 +1222,28 @@ final class Suite
     }
 
     /**
+     * `batch_results` whole, or `count` and `batch_results_sample` by index.
+     */
+    private static function checkResultsOutcome(\stdClass $spec, mixed $results, string $path): void
+    {
+        if (isset($spec->batch_results)) {
+            self::checkBatchResults($spec->batch_results, $results, $path . '.batch_results');
+        }
+        if (isset($spec->count) && (!is_array($results) || count($results) !== $spec->count)) {
+            throw new Fail(sprintf('%s: expected %d results, got %s', $path, $spec->count, is_array($results) ? (string) count($results) : self::describe($results)));
+        }
+        foreach ($spec->batch_results_sample ?? [] as $sample) {
+            $index = (int) $sample->index;
+            if (!is_array($results) || !array_key_exists($index, $results)) {
+                throw new Fail(sprintf('%s: no result %d', $path, $index));
+            }
+            $one = clone $sample;
+            unset($one->index);
+            self::checkBatchResults([$one], [$results[$index]], sprintf('%s.batch_results[%d]', $path, $index));
+        }
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private static function sessionValue(mixed $s): array
@@ -1307,16 +1377,19 @@ final class Suite
                     Compare::match($spec->batch_page ?? new \stdClass(), self::batchPage($result), $path . '.batch_page');
                     break;
                 case 'batch_results':
-                    self::checkBatchResults($spec->batch_results, $result, $path . '.batch_results');
+                    self::checkResultsOutcome($spec, $result, $path);
+                    break;
+                case 'checked':
+                    if (!$result instanceof Checked) {
+                        throw new Fail(sprintf('%s: expected a clean check, got %s', $path, self::describe($result)));
+                    }
                     break;
                 case 'batch_run':
                     if (!is_array($result) || count($result) !== 2) {
                         throw new Fail($path . ': expected [Batch, results], got ' . self::describe($result));
                     }
                     Compare::match($spec->batch ?? new \stdClass(), self::batch($result[0]), $path . '.batch');
-                    if (isset($spec->batch_results)) {
-                        self::checkBatchResults($spec->batch_results, $result[1], $path . '.batch_results');
-                    }
+                    self::checkResultsOutcome($spec, $result[1], $path);
                     break;
                 case 'session':
                     Compare::match($spec->session ?? new \stdClass(), self::sessionValue($result), $path . '.session');
