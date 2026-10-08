@@ -1,0 +1,374 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Bynn\DecisionNode;
+
+use Bynn\DecisionNode\Exception\DecisionNodeError;
+use Bynn\DecisionNode\Exception\ServerError;
+use Bynn\DecisionNode\Internal\Api;
+use Bynn\DecisionNode\Internal\Images;
+use Bynn\DecisionNode\Internal\Json;
+use Bynn\DecisionNode\Internal\Prepare;
+use GuzzleHttp\Promise\Create;
+use GuzzleHttp\Promise\PromiseInterface;
+use GuzzleHttp\Promise\Utils;
+
+/**
+ * The Batch API: many decisions at half the price, answered within 24 hours.
+ * Reach it as `$dn->batches`; `$dn->runBatch()` runs the whole lifecycle.
+ *
+ *     $batch = $dn->batches->create([
+ *         ['custom_id' => 'ticket-1', 'state' => '...', 'questions' => [...]],
+ *     ]);
+ *     $batch = $dn->batches->finalize($batch->id);
+ *     // later
+ *     foreach ($dn->batches->results($batch->id) as $line) { ... }
+ *
+ * Create, add and finalize are retried only on 429 and 529, never after a
+ * timeout or a lost answer, since a repeat could create a second draft or
+ * repeat custom ids. The other calls are retried like every API call.
+ */
+final class Batches
+{
+    /** The most bytes one add sends; a larger list is split into several adds, in order. */
+    public const MAX_ADD_BYTES = 10_485_760;
+
+    /**
+     * @internal
+     */
+    public function __construct(
+        private readonly Api $api,
+        private readonly Images $images,
+        private readonly string $model,
+    ) {
+    }
+
+    /**
+     * `POST /v1/batches`: a new batch holding `$requests`, or an empty draft.
+     *
+     * @param iterable<BatchRequest|array<string, mixed>|object> $requests
+     *
+     * @throws \InvalidArgumentException|DecisionNodeError
+     */
+    public function create(iterable $requests = []): Batch
+    {
+        return $this->createAsync($requests)->wait();
+    }
+
+    /**
+     * @param iterable<BatchRequest|array<string, mixed>|object> $requests
+     *
+     * @return PromiseInterface resolves with a Batch
+     */
+    public function createAsync(iterable $requests = []): PromiseInterface
+    {
+        return $this->lines($requests)->then(
+            fn (array $lines): PromiseInterface => $this->send('POST', '/v1/batches', implode('', $lines), Api::RETRY_MUTATION, 'application/x-ndjson'),
+        );
+    }
+
+    /**
+     * `POST /v1/batches/{id}/requests`: adds requests to a draft, in calls of
+     * at most 10 MiB each, in order. Returns the batch after the last call.
+     *
+     * @param iterable<BatchRequest|array<string, mixed>|object> $requests at least one
+     *
+     * @throws \InvalidArgumentException|DecisionNodeError
+     */
+    public function add(string $batchId, iterable $requests): Batch
+    {
+        return $this->addAsync($batchId, $requests)->wait();
+    }
+
+    /**
+     * @param iterable<BatchRequest|array<string, mixed>|object> $requests
+     *
+     * @return PromiseInterface resolves with a Batch
+     */
+    public function addAsync(string $batchId, iterable $requests): PromiseInterface
+    {
+        return $this->lines($requests, requireOne: true)->then(
+            fn (array $lines): PromiseInterface => $this->addLines($batchId, $lines),
+        );
+    }
+
+    /**
+     * Sends prepared lines in calls of at most 10 MiB each, in order.
+     *
+     * @param array<string> $lines
+     *
+     * @return PromiseInterface resolves with the Batch after the last call
+     *
+     * @internal
+     */
+    public function addLines(string $batchId, array $lines): PromiseInterface
+    {
+        $chunks = [];
+        $chunk = '';
+        foreach ($lines as $line) {
+            if ($chunk !== '' && strlen($chunk) + strlen($line) > self::MAX_ADD_BYTES) {
+                $chunks[] = $chunk;
+                $chunk = '';
+            }
+            $chunk .= $line;
+        }
+        $chunks[] = $chunk;
+
+        $path = '/v1/batches/' . rawurlencode($batchId) . '/requests';
+        $promise = Create::promiseFor(null);
+        foreach ($chunks as $body) {
+            $promise = $promise->then(fn (): PromiseInterface => $this->send('POST', $path, $body, Api::RETRY_MUTATION, 'application/x-ndjson'));
+        }
+
+        return $promise;
+    }
+
+    /**
+     * `POST /v1/batches/{id}/finalize`: queues the draft. When the API
+     * answers that the batch is no longer a draft (an earlier finalize whose
+     * answer was lost went through), the batch is read and returned.
+     */
+    public function finalize(string $batchId): Batch
+    {
+        return $this->finalizeAsync($batchId)->wait();
+    }
+
+    /**
+     * @return PromiseInterface resolves with a Batch
+     */
+    public function finalizeAsync(string $batchId): PromiseInterface
+    {
+        return $this->send('POST', '/v1/batches/' . rawurlencode($batchId) . '/finalize', null, Api::RETRY_MUTATION)->otherwise(
+            function (mixed $reason) use ($batchId): PromiseInterface {
+                if (!$reason instanceof DecisionNodeError || $reason->status !== 409 || $reason->errorType !== 'invalid_batch_state') {
+                    throw $reason instanceof \Throwable ? $reason : new DecisionNodeError('The request failed.');
+                }
+
+                return $this->getAsync($batchId)->then(static function (Batch $batch) use ($reason): Batch {
+                    if ($batch->state === 'draft') {
+                        throw $reason;
+                    }
+
+                    return $batch;
+                });
+            },
+        );
+    }
+
+    /**
+     * `GET /v1/batches/{id}`.
+     */
+    public function get(string $batchId): Batch
+    {
+        return $this->getAsync($batchId)->wait();
+    }
+
+    /**
+     * @return PromiseInterface resolves with a Batch
+     */
+    public function getAsync(string $batchId): PromiseInterface
+    {
+        return $this->send('GET', '/v1/batches/' . rawurlencode($batchId), null);
+    }
+
+    /**
+     * `GET /v1/batches`: one page of the key's batches, newest first.
+     */
+    public function list(?int $offset = null, ?int $limit = null): BatchPage
+    {
+        return $this->listAsync($offset, $limit)->wait();
+    }
+
+    /**
+     * @return PromiseInterface resolves with a BatchPage
+     */
+    public function listAsync(?int $offset = null, ?int $limit = null): PromiseInterface
+    {
+        $query = http_build_query(array_filter(['offset' => $offset, 'limit' => $limit], static fn (?int $v): bool => $v !== null));
+
+        return $this->api->request('GET', '/v1/batches' . ($query !== '' ? '?' . $query : ''))->then(
+            static fn (array $result): BatchPage => BatchPage::fromArray(self::object($result)),
+        );
+    }
+
+    /**
+     * `GET /v1/batches/{id}/results`: one BatchResult per request, in the
+     * order the requests were added.
+     *
+     * @return list<BatchResult>
+     */
+    public function results(string $batchId): array
+    {
+        return $this->resultsAsync($batchId)->wait();
+    }
+
+    /**
+     * @return PromiseInterface resolves with list<BatchResult>
+     */
+    public function resultsAsync(string $batchId): PromiseInterface
+    {
+        return $this->api->request('GET', '/v1/batches/' . rawurlencode($batchId) . '/results', json: false)->then(
+            static function (array $result): array {
+                $out = [];
+                $text = (string) $result['text'];
+                $trimmed = ltrim($text);
+                // JSON Lines, or one JSON array when asked for format=json.
+                $lines = str_starts_with($trimmed, '[') ? [$trimmed] : explode("\n", $text);
+                foreach ($lines as $line) {
+                    if (trim($line) === '') {
+                        continue;
+                    }
+                    try {
+                        $decoded = Json::decode($line);
+                    } catch (\JsonException $e) {
+                        /** @var array<string, string> $headers */
+                        $headers = $result['headers'];
+                        throw new ServerError('A results line is not JSON.', status: $result['status'], requestId: $headers['x-request-id'] ?? null, body: $text, headers: $headers, previous: $e);
+                    }
+                    $shape = Json::decodeObjects($line);
+                    $entries = is_array($decoded) && array_is_list($decoded) ? $decoded : [$decoded];
+                    $shapes = is_array($shape) ? $shape : [$shape];
+                    foreach ($entries as $i => $entry) {
+                        if (is_array($entry)) {
+                            $out[] = BatchResult::fromArray($entry, $shapes[$i] ?? null);
+                        }
+                    }
+                }
+
+                return $out;
+            },
+        );
+    }
+
+    /**
+     * `POST /v1/batches/{id}/cancel`: a draft is cancelled at once; a running
+     * batch winds down and ends `cancelled`.
+     */
+    public function cancel(string $batchId): Batch
+    {
+        return $this->cancelAsync($batchId)->wait();
+    }
+
+    /**
+     * @return PromiseInterface resolves with a Batch
+     */
+    public function cancelAsync(string $batchId): PromiseInterface
+    {
+        return $this->send('POST', '/v1/batches/' . rawurlencode($batchId) . '/cancel', null);
+    }
+
+    /**
+     * Checks every request before anything is sent; the returned promise
+     * resolves with the JSON lines, after uploading the lines' large images.
+     *
+     * @param iterable<BatchRequest|array<string, mixed>|object> $requests
+     *
+     * @return PromiseInterface resolves with list<string>, each line ending in "\n"
+     *
+     * @internal
+     */
+    public function lines(iterable $requests, bool $requireOne = false): PromiseInterface
+    {
+        $prepared = [];
+        foreach ($requests as $i => $request) {
+            $prepared[] = $this->prepare($request, $i);
+        }
+        if ($requireOne && $prepared === []) {
+            throw new \InvalidArgumentException('Add at least one request.');
+        }
+
+        $promises = [];
+        foreach ($prepared as [$head, $model, $state, $questions, $images, $tail]) {
+            $promises[] = $this->images->wires($images)->then(
+                static fn (array $wires): string => Prepare::body($model, $state, $questions, $wires[0], $head, $tail) . "\n",
+            );
+        }
+
+        return Utils::all($promises);
+    }
+
+    /**
+     * @return array{array<string, mixed>, string, mixed, array<string, mixed>, list<mixed>, array<string, mixed>}
+     */
+    private function prepare(mixed $request, int|string $index): array
+    {
+        if ($request instanceof BatchRequest) {
+            $args = ['custom_id' => $request->customId, 'state' => $request->state, 'questions' => $request->questions, 'images' => $request->images, 'model' => $request->model];
+        } elseif (is_array($request)) {
+            $args = $request;
+        } elseif (is_object($request)) {
+            $args = get_object_vars($request);
+        } else {
+            throw new \InvalidArgumentException(sprintf('Batch request %s must be a BatchRequest or an array.', (string) $index));
+        }
+        $customId = $args['custom_id'] ?? $args['customId'] ?? null;
+        if (!is_string($customId) && !is_int($customId)) {
+            throw new \InvalidArgumentException(sprintf('Batch request %s needs a custom_id.', (string) $index));
+        }
+        $questions = $args['questions'] ?? [];
+        if (!is_iterable($questions) && !is_object($questions)) {
+            throw new \InvalidArgumentException(sprintf('Batch request %s: questions must be a map of questions.', (string) $index));
+        }
+        $images = $args['images'] ?? null;
+        $model = $args['model'] ?? null;
+
+        $tail = $args;
+        unset($tail['custom_id'], $tail['customId'], $tail['state'], $tail['questions'], $tail['images'], $tail['model']);
+
+        return [
+            ['custom_id' => $customId],
+            is_string($model) && $model !== '' ? $model : $this->model,
+            $args['state'] ?? '',
+            Prepare::questions($questions),
+            Prepare::images(is_iterable($images) ? $images : null),
+            $tail,
+        ];
+    }
+
+    /**
+     * @return PromiseInterface resolves with a Batch
+     */
+    private function send(string $method, string $path, ?string $body, string $policy = Api::RETRY_DEFAULT, string $contentType = 'application/json'): PromiseInterface
+    {
+        return $this->api->request($method, $path, $body, $policy, $contentType)->then(
+            static fn (array $result): Batch => Batch::fromArray(self::object($result)),
+        );
+    }
+
+    /**
+     * Reads a batch with its response headers, for `runBatch`'s polling.
+     *
+     * @return PromiseInterface resolves with [Batch, array<string, string> headers]
+     *
+     * @internal
+     */
+    public function poll(string $batchId, ?float $delay): PromiseInterface
+    {
+        return $this->api->request('GET', '/v1/batches/' . rawurlencode($batchId), delay: $delay)->then(
+            static fn (array $result): array => [Batch::fromArray(self::object($result)), $result['headers']],
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     *
+     * @return array<array-key, mixed>
+     */
+    private static function object(array $result): array
+    {
+        if (!is_array($result['body'])) {
+            /** @var array<string, string> $headers */
+            $headers = $result['headers'];
+            throw new ServerError(
+                sprintf('HTTP %d: the response body is not a JSON object.', (int) $result['status']),
+                status: (int) $result['status'],
+                requestId: $headers['x-request-id'] ?? null,
+                body: $result['body'],
+                headers: $headers,
+            );
+        }
+
+        return $result['body'];
+    }
+}
