@@ -101,7 +101,7 @@ $d['damage']->confidence;   // 0.88
 $d['any_damage']->truth;    // 0.93
 ```
 
-- `$image` is the id of the image to look in. With one image in the request it can be left out; with two or more it is required.
+- `$image` is the id of the image to look in, a string. With one image in the request it can be left out; with two or more it is required. A reference by number ("Picture 2") goes in the instructions.
 - `$units` is `pixels` (the default: pixels of the image as sent, after its EXIF orientation) or `normalized` (fractions of the width and height, from 0 to 1).
 - `x` and `y`, and the corners `x1`, `y1` (top left) and `x2`, `y2` (bottom right), count from the top-left corner of the image, `x` to the right and `y` down.
 - `present` is the probability that what the instructions describe is in the image at all. Under a low `present` the place is only the best guess for something that is probably not there.
@@ -204,6 +204,21 @@ How a local image travels is chosen for the shortest response time:
 Set `inlineThreshold` on the client to change the threshold (`0` uploads every local image). `upload($images)` uploads whatever the size and returns the upload ids, for a pipeline that wants to upload first and decide later.
 
 How many large images fit in one request is the model's token limit, which the server checks: a request over it is a `ContextLimitError`.
+
+### Referring to images and videos
+
+The model sees each image as "Picture 1", "Picture 2", ... with its id beside it, numbered from 1 in the order of `images`, and each video as "Video 1", "Video 2", ... in the order of `videos`, numbered separately. Text in the state, the instructions or a criterion can refer to an image by position ("Picture 2", "image 2", "the second image", "the last image") or by its id ("the receipt", "`receipt`"), and to a video the same way ("Video 1" or its id).
+
+```php
+$d = $dn->decide(
+    state: 'Expense claim 4411.',
+    images: [
+        Image::fromUrl('receipt', 'https://files.example.com/claims/4411/receipt.jpg'),
+        Image::fromUrl('statement', 'https://files.example.com/claims/4411/statement.png'),
+    ],
+    questions: ['charged' => truth('Does the total in Picture 1 match the charge on the statement?')],
+);
+```
 
 ## Videos
 

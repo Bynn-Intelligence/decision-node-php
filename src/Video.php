@@ -6,8 +6,10 @@ namespace Bynn\DecisionNode;
 
 /**
  * A video sent with a request as the frames the caller sampled, each with its
- * time, and referred to by its `id` (unique across a request's images and
- * videos).
+ * time. Its `id` is unique across a request's images and videos; the model
+ * sees the video as "Video <n>" (its place in the request's videos, from 1)
+ * with this id beside it, so text in the state or the instructions can refer
+ * to it by either.
  *
  *     Video::of('dock', [
  *         VideoFrame::fromData(30.0, $jpeg1),

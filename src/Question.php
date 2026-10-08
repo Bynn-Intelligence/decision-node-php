@@ -120,8 +120,9 @@ final class Question implements \JsonSerializable
      * that the thing is there at all (`present`) and the probability that the
      * spot is on it (`confidence`).
      *
-     * `$image` is the id of the image to look in, needed when the request has
-     * two or more images; `$units` is `pixels` (the default) or `normalized`
+     * `$image` is the id of the image to look in (a string), needed when the
+     * request has two or more images; a reference by number ("Picture 2") goes
+     * in the instructions. `$units` is `pixels` (the default) or `normalized`
      * (fractions of the width and height). Each is left out of the request
      * when not given.
      */

@@ -8,7 +8,10 @@ use Bynn\DecisionNode\Internal\ImageHeader;
 use Psr\Http\Message\StreamInterface;
 
 /**
- * An image sent with a request, referred to by its `id`.
+ * An image sent with a request. Its `id` is unique within the request; the
+ * model sees the image as "Picture <n>" (its place in the request's images,
+ * from 1) with this id beside it, so text in the state or the instructions can
+ * refer to it by either.
  *
  *     Image::fromUrl('receipt', 'https://example.com/receipt.jpg')   // recommended: nothing is uploaded
  *     Image::fromPath('receipt', '/path/to/receipt.jpg')
