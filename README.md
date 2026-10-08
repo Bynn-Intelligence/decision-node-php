@@ -147,7 +147,7 @@ $d = $dn->decide(
 );
 ```
 
-A URL must be `https` and at most 2,048 characters; the SDK checks that and sends it as it is, without fetching it. Local images work too:
+A URL must be `https`, at most 2,048 characters, on port 443, without user information and not a literal private address; the SDK checks that and sends it as it is, without fetching it. Local images work too:
 
 ```php
 Image::fromPath('receipt', __DIR__ . '/receipt.jpg');
@@ -164,7 +164,7 @@ How a local image travels is chosen for the shortest response time:
 
 - **Small images go inline.** When a request's local images total under 512 KiB (`DecisionNode::DEFAULT_INLINE_THRESHOLD`, 524,288 bytes), they are sent as base64 inside the request.
 - **Larger ones are uploaded once.** At or above that size, the SDK uploads them first, with one `POST /v1/uploads` for all of them and one `PUT` each straight to storage, side by side, then sends the request naming them by upload id. The `PUT` carries only the headers the API returned: never your key, never your custom headers, and no redirect is followed.
-- **An upload is reused.** The client remembers its uploads by the SHA-256 of the bytes, in memory, for the upload's hour (up to 5 minutes before it expires, at most 256 images). The same image in a later request, a `decideMany`, a session frame or a batch line is sent by its upload id whatever its size, with nothing uploaded again. If the API answers that an upload the SDK placed has expired or was used up, the SDK uploads the image again and sends the request once more.
+- **An upload is shared and reused.** Requests running side by side with the same image share one upload. The client remembers its uploads by the SHA-256 of the bytes, in memory, for the upload's hour (up to 5 minutes before it expires, at most 256 images). The same image in a later request, a `decideMany`, a session frame or a batch line is sent by its upload id whatever its size, with nothing uploaded again. If the API answers that an upload the SDK placed has expired or was used up, the SDK uploads the image again and sends the request once more.
 
 Set `inlineThreshold` on the client to change the threshold (`0` uploads every local image). `upload($images)` uploads whatever the size and returns the upload ids, for a pipeline that wants to upload first and decide later.
 
@@ -279,7 +279,16 @@ try {
 }
 ```
 
-The SDK checks a request before sending it, so a request the API would refuse costs no round trip. A fault in the request's content raises the class the API would answer with, with no `status` and no `requestId`: `BadRequestError` for an image that is not JPEG, PNG or WebP, over 10 MB or over 40 megapixels, more than 4 images, an image URL that is not `https` or longer than 2,048 characters, a choice with no options or more than 255, a score with more than 10 levels, a truth question with neither instructions nor criteria, a number question without instructions; `ValidationError` for a score with no levels and a number grid with `step` not above 0, `min` above `max` or more than 4,096 values. Token limits stay the server's, since they differ by model and are published at `models()`. `decideRaw` sends its body unchecked.
+The SDK checks every fixed rule the API documents before sending, so the server never sees a request the client could have refused and a fault costs no round trip. A local error has the class, `errorType` and message the server would answer with, and no `status` or `requestId`:
+
+| Fault | Raised as |
+|---|---|
+| A choice with no options or more than 255, a score with more than 10 levels, a truth question with neither instructions nor criteria, a number question without instructions | `BadRequestError` with the API's message and no `errorType` |
+| An unknown question type (on `systemone`, a number question too), objects and arrays nested more than 128 deep, an image fault (not JPEG, PNG or WebP, over 10 MB or 40 megapixels, more than 4 images, an empty or repeated id, an image URL that is not `https`), an upload id given with another media type, a batch request without a valid or with a repeated `custom_id`, an empty `add`, `list` paging out of range | `BadRequestError`, `errorType` `api_usage_error` |
+| An image URL over 2,048 characters, with user information, on a port other than 443, or on a literal private, loopback or reserved address | `BadRequestError`, `errorType` `image_url_refused` |
+| A question or state of the wrong shape or type, a score with no levels, a number grid fault (`min`, `max` or `step` not a number, beyond 2^53, more than 6 decimals, `step` not above 0, `min` above `max`, more than 4,096 values), a session `window` outside 1 to 64 or `ttl_seconds` outside 1 to 3,600 | `ValidationError` with the `entries` the API would list |
+
+A frame that breaks a rule (no frame and no image, an empty frame, an unknown or empty question list, a `seq` out of range, an image fault, an image by URL) makes `Session::send()` throw `BadRequestError` (`api_usage_error`): nothing goes on the socket and the frame takes no `seq`. Once `models()` has been called, the limits it lists (a model that answers no number questions or serves no sessions, `max_window`, `requests_per_batch`, `max_custom_id_chars`) are checked too; until then they are left to the server. Token limits stay the server's, since they differ by model. `decideRaw` sends its body unchecked.
 
 A problem with the arguments themselves is PHP's own `InvalidArgumentException`, never a `DecisionNodeError`: an empty question map, a value that cannot be encoded as JSON, an image file it cannot read, a `timeout` of 0 or less, a negative `maxRetries` or `inlineThreshold`, a base URL that is not `https`, an `httpClient` the SDK cannot show refuses redirects or one that turns off TLS checks (see [HTTP client](#http-client)), a `$concurrency` below 1, a batch request without a `custom_id`, a `runBatch` poll interval under 10 s.
 
@@ -322,6 +331,7 @@ $d->raw['safety'];   // the same scores, from the body
 | `httpClient` | | your own `GuzzleHttp\Client` (rules below) |
 | `logger` | | none |
 | `inlineThreshold` | | `524288` bytes: local images of a request under it in all go inline, at or above it they are uploaded |
+| `clock` | | the system clock: a `Closure` returning the Unix time in seconds, which upload URLs and cached uploads are judged by (for tests) |
 
 An argument wins over the environment, which wins over the default. An empty string counts as not given, for the client's arguments and for the `$model` of a call. A base URL that is not `https`, from an argument or from the environment, throws `InvalidArgumentException` when the client is made, so the API key never travels unencrypted; plain `http` is accepted only for this machine (`localhost`, `127.0.0.1`, `::1`), for a local test server. Pin a model per client or per call with `decisionnode-1.0` or `decisionnode-1.0-flash`; `decisionnode-latest` and `decisionnode-flash-latest` follow the newest release.
 
@@ -364,7 +374,7 @@ composer test          # unit tests
 composer analyse       # static analysis
 ```
 
-The conformance tests run the language-neutral DecisionNode conformance cases (suite 1.4) against their mock server, every case once through the blocking methods and once through their `Async` forms (sessions are blocking in both runs): set `DECISIONNODE_CONFORMANCE_DIR` to the suite's directory and run `composer conformance`. Without that variable the conformance tests fail; they never skip. CI checks the suite out at a pinned commit, set once as `CONFORMANCE_REF` in `.github/workflows/ci.yml`, and every action in the workflow is pinned to a commit SHA.
+The conformance tests run the language-neutral DecisionNode conformance cases (suite 1.5) against their mock server, every case once through the blocking methods and once through their `Async` forms (sessions are blocking in both runs): set `DECISIONNODE_CONFORMANCE_DIR` to the suite's directory and run `composer conformance`. Without that variable the conformance tests fail; they never skip. CI checks the suite out at a pinned commit, set once as `CONFORMANCE_REF` in `.github/workflows/ci.yml`, and every action in the workflow is pinned to a commit SHA.
 
 ## License
 

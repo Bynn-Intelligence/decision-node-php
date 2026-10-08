@@ -19,6 +19,10 @@ First release. Implements version 1.1 of the DecisionNode SDK specification, sta
 - Sessions: `openSession()`, `Session::connect()`, `send()`, `next()`, `replies()`, `end()` and `close()`, with `Reply`, `FrameError` and `SessionClosed` values, and `supervise()` for a long-lived feed. A 429 `session_limit_exceeded` raises the new `SessionLimitError`, a `RateLimitError`, and is never retried. Sessions use `phrity/websocket`.
 - The Batch API as `$dn->batches` (`create`, `add`, `finalize`, `get`, `list`, `results`, `cancel`, each with an `Async` form) and `runBatch()`, with `Batch`, `BatchPage`, `BatchResult` and `BatchRequest`. Adds are split at 10 MiB. Create, add and finalize are retried only on 429 and 529.
 - `DEFAULT_INLINE_THRESHOLD` as a class constant and as `Bynn\DecisionNode\DEFAULT_INLINE_THRESHOLD`.
+- Every fixed rule the API documents is checked before sending, with the class, error type and message the server would answer: unknown question types (a number question on `systemone` too), the shapes and types of questions and states (a `ValidationError` with the server's entries), every number grid rule, the 128-level nesting limit, repeated or empty image ids, an upload id's media type, image URLs (`image_url_refused` for the length, user information, a port other than 443 and literal private addresses), session `window` and `ttl_seconds`, frames (`Session::send()` throws and the frame takes no `seq`), batch `custom_id` rules and an empty add, and `list` paging. Plain-string refusals carry no error type. Limits only the models list states are checked once `models()` has been called.
+- A storage PUT answered 403 after its URL's time has passed is presigned again once.
+- Requests running side by side with the same image share one upload.
+- The `clock` client option: the time upload URLs and cached uploads are judged by.
 
 ### Changed in specification 1.1
 
@@ -44,5 +48,5 @@ First release. Implements version 1.1 of the DecisionNode SDK specification, sta
 - Guzzle as the HTTP client (the default one, or your own for a proxy or TLS options), and optional PSR-3 debug logging. A caller's client must be a `GuzzleHttp\Client` with one of Guzzle's own handlers (curl, curl multi, stream or mock); any other client or handler type is refused with `InvalidArgumentException`, since the SDK cannot show that it never follows a redirect. A response from another host, or a request sent more than once in one attempt, is refused. Other PSR-18 clients are not accepted.
 - For an `https` base URL, a caller's client that turns off TLS certificate or host name checks (`verify` off, curl's peer or host verification off, or an unsafe `stream_context`) is refused with `InvalidArgumentException`.
 - The base error is exported under the name `DecisionNodeError`, and every error class extends it.
-- The conformance tests run every case of suite 1.4 through the blocking methods and through their `Async` forms, and fail when `DECISIONNODE_CONFORMANCE_DIR` is not set.
+- The conformance tests run every case of suite 1.5 through the blocking methods and through their `Async` forms, and fail when `DECISIONNODE_CONFORMANCE_DIR` is not set.
 - CI pins every action to a commit SHA, checks out with `persist-credentials: false`, and checks the conformance suite out at one pinned commit.
