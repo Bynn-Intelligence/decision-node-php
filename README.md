@@ -239,7 +239,8 @@ Each call is also yours to use, as `$dn->batches->...`:
 | `finalize($batchId)` | `POST /v1/batches/{id}/finalize` | `Batch` |
 | `get($batchId)` | `GET /v1/batches/{id}` | `Batch` |
 | `list($offset, $limit)` | `GET /v1/batches` | `BatchPage` with `batches`, `offset`, `limit`, `total`, `nextOffset` |
-| `results($batchId)` | `GET /v1/batches/{id}/results` | A list of `BatchResult` in the order the requests were added |
+| `results($batchId)` | `GET /v1/batches/{id}/results`, the whole file | A list of `BatchResult` in the order the requests were added |
+| `stream($batchId)` | The same, read line by line as the body arrives | A generator of `BatchResult`, so a large results file is never held in memory whole |
 | `cancel($batchId)` | `POST /v1/batches/{id}/cancel` | `Batch` |
 
 A request is an array with `custom_id` and the arguments of `decide` (`state`, `questions`, `images`, `model`), or a `BatchRequest`. Every request is checked before anything is sent, and each line's local images follow the image rules above. `create`, `add` and `finalize` are retried only on 429 and 529, never after a timeout or a lost answer, so a batch is never created twice; a `finalize` whose earlier attempt went through returns the batch. The other calls are retried like every call.
@@ -288,13 +289,22 @@ The SDK checks every fixed rule the API documents before sending, so the server 
 | An image URL over 2,048 characters, with user information, on a port other than 443, or on a literal private, loopback or reserved address | `BadRequestError`, `errorType` `image_url_refused` |
 | A question or state of the wrong shape or type, a score with no levels, a number grid fault (`min`, `max` or `step` not a number, beyond 2^53, more than 6 decimals, `step` not above 0, `min` above `max`, more than 4,096 values), a session `window` outside 1 to 64 or `ttl_seconds` outside 1 to 3,600 | `ValidationError` with the `entries` the API would list |
 
-A frame that breaks a rule (no frame and no image, an empty frame, an unknown or empty question list, a `seq` out of range, an image fault, an image by URL) makes `Session::send()` throw `BadRequestError` (`api_usage_error`): nothing goes on the socket and the frame takes no `seq`. Once `models()` has been called, the limits it lists (a model that answers no number questions or serves no sessions, `max_window`, `requests_per_batch`, `max_custom_id_chars`) are checked too; until then they are left to the server. Token limits stay the server's, since they differ by model. `decideRaw` sends its body unchecked.
+A frame that breaks a rule (no frame and no image, an empty frame, an unknown or empty question list, a `seq` out of range, an image fault, an image by URL) makes `Session::send()` throw `BadRequestError` (`api_usage_error`): nothing goes on the socket and the frame takes no `seq`. Once `models()` has been called, the limits it lists (a model that answers no number questions or serves no sessions, `max_window`, `requests_per_batch`, `max_custom_id_chars`) are checked too; until then they are left to the server. A model is found in the held list by its name, or by the entry that names it as its alias or pinned version; a model the list does not name is left to the server. Token limits stay the server's, since they differ by model. `decideRaw` sends its body unchecked.
+
+To check a request without sending it, for example while a user is still editing it, call `checkRequest()` with the call's name and arguments, or `checkFrame()` on a session with `send()`'s arguments. Each runs every check sending would run, throws the same error, sends and uploads nothing, and returns when the request would be sent:
+
+```php
+$dn->checkRequest('decide', ['state' => $state, 'questions' => $questions, 'images' => $images]);
+$dn->checkRequest('openSession', ['questions' => $questions, 'window' => 16]);
+$dn->checkRequest('batches.create', ['requests' => $requests]);   // also systemone and batches.add
+$session->checkFrame(frame: $reading, questions: ['abort']);
+```
 
 A problem with the arguments themselves is PHP's own `InvalidArgumentException`, never a `DecisionNodeError`: an empty question map, a value that cannot be encoded as JSON, an image file it cannot read, a `timeout` of 0 or less, a negative `maxRetries` or `inlineThreshold`, a base URL that is not `https`, an `httpClient` the SDK cannot show refuses redirects or one that turns off TLS checks (see [HTTP client](#http-client)), a `$concurrency` below 1, a batch request without a `custom_id`, a `runBatch` poll interval under 10 s.
 
 ## Timeouts and retries
 
-Each attempt times out after 10 seconds, counted over the whole attempt: from sending the request to the last byte of the response body, not per network read. A request is retried twice after the first attempt on 408, 429, any 5xx, timeouts and dropped connections, waiting what the server asks for (`retry-after-ms`, else `Retry-After` in seconds or as an HTTP date, never more than 60 s) or else backing off exponentially from 0.5 s with jitter, up to 8 s. 400, 401, 402, 403, 404 and 422 are never retried. A decision changes nothing on the server, so a retry is always safe. An image upload's `PUT` is retried the same way on 5xx and dropped connections. Batch `create`, `add` and `finalize` are the exception: retried only on 429 and 529 (see [Batches](#batches)).
+Each attempt times out after 10 seconds, counted over the whole attempt: from sending the request to the last byte of the response body, not per network read. A request is retried twice after the first attempt on 408, 429, any 5xx, timeouts and dropped connections, waiting what the server asks for (`retry-after-ms`, else `Retry-After` in seconds or as an HTTP date, never more than 60 s) or else backing off exponentially from 0.5 s with jitter, up to 8 s. 400, 401, 402, 403, 404 and 422 are never retried. A decision changes nothing on the server, so a retry is always safe. An image upload's `PUT` is retried the same way on 5xx and dropped connections, and has its own timeout, `uploadTimeout` (60 s by default), since an image of several MB may take longer than an API attempt is allowed. Batch `create`, `add` and `finalize` are the exception: retried only on 429 and 529 (see [Batches](#batches)).
 
 ```php
 $dn = new DecisionNode(timeout: 5.0, maxRetries: 4);
@@ -331,6 +341,7 @@ $d->raw['safety'];   // the same scores, from the body
 | `httpClient` | | your own `GuzzleHttp\Client` (rules below) |
 | `logger` | | none |
 | `inlineThreshold` | | `524288` bytes: local images of a request under it in all go inline, at or above it they are uploaded |
+| `uploadTimeout` | | `60.0` seconds for one storage `PUT` of an image upload; above 0 |
 | `clock` | | the system clock: a `Closure` returning the Unix time in seconds, which upload URLs and cached uploads are judged by (for tests) |
 
 An argument wins over the environment, which wins over the default. An empty string counts as not given, for the client's arguments and for the `$model` of a call. A base URL that is not `https`, from an argument or from the environment, throws `InvalidArgumentException` when the client is made, so the API key never travels unencrypted; plain `http` is accepted only for this machine (`localhost`, `127.0.0.1`, `::1`), for a local test server. Pin a model per client or per call with `decisionnode-1.0` or `decisionnode-1.0-flash`; `decisionnode-latest` and `decisionnode-flash-latest` follow the newest release.
@@ -352,7 +363,7 @@ By default the SDK uses Guzzle and reuses its connections, for API requests and 
 - **TLS checks stay on.** For an `https` base URL, a client that turns off certificate or host name checks (`'verify' => false`, curl's `CURLOPT_SSL_VERIFYPEER` or `CURLOPT_SSL_VERIFYHOST` off, or a `stream_context` with `verify_peer` or `verify_peer_name` off or `allow_self_signed` on) is refused with `InvalidArgumentException`. Pointing `verify` at your own CA bundle is fine.
 - **The timeout covers the whole attempt** with your client too.
 
-A session's socket uses [phrity/websocket](https://packagist.org/packages/phrity/websocket) with PHP's own TLS checks; it follows no redirect, and its URL must be `wss` (plain `ws` only on this machine).
+A session's socket uses [phrity/websocket](https://packagist.org/packages/phrity/websocket). It takes your client's TLS settings (a CA bundle given as `verify`, a client certificate and key) and its `https` proxy, through which it opens a tunnel (`proxy` given as a string, or as an array with `https` and the `no` hosts that bypass it); certificate and host name checks stay on. It follows no redirect, and its URL must be `wss` (plain `ws` only on this machine).
 
 ```php
 $dn = new DecisionNode(httpClient: new \GuzzleHttp\Client(['proxy' => 'http://proxy.example.com:3128']));
@@ -374,7 +385,7 @@ composer test          # unit tests
 composer analyse       # static analysis
 ```
 
-The conformance tests run the language-neutral DecisionNode conformance cases (suite 1.5) against their mock server, every case once through the blocking methods and once through their `Async` forms (sessions are blocking in both runs): set `DECISIONNODE_CONFORMANCE_DIR` to the suite's directory and run `composer conformance`. Without that variable the conformance tests fail; they never skip. CI checks the suite out at a pinned commit, set once as `CONFORMANCE_REF` in `.github/workflows/ci.yml`, and every action in the workflow is pinned to a commit SHA.
+The conformance tests run the language-neutral DecisionNode conformance cases (suite 1.6) against their mock server, every case once through the blocking methods and once through their `Async` forms (sessions are blocking in both runs): set `DECISIONNODE_CONFORMANCE_DIR` to the suite's directory and run `composer conformance`. Without that variable the conformance tests fail; they never skip. CI checks the suite out at a pinned commit, set once as `CONFORMANCE_REF` in `.github/workflows/ci.yml`, and every action in the workflow is pinned to a commit SHA.
 
 ## License
 

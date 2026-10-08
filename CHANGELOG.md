@@ -23,6 +23,11 @@ First release. Implements version 1.1 of the DecisionNode SDK specification, sta
 - A storage PUT answered 403 after its URL's time has passed is presigned again once.
 - Requests running side by side with the same image share one upload.
 - The `clock` client option: the time upload URLs and cached uploads are judged by.
+- `checkRequest($method, $request)` and `Session::checkFrame()`: every local check a call runs before sending, with the same error, sending and uploading nothing.
+- Limits held from `models()` are found by a model's name, or by the entry that names it as its alias or pinned version.
+- Storage PUTs have their own timeout, the `uploadTimeout` option (60 s by default), apart from the API attempt's `timeout`.
+- `$dn->batches->stream()` reads batch results line by line as the body arrives; `results()` reads the whole file.
+- A session's socket takes the HTTP client's TLS settings and its `https` proxy (through a tunnel).
 
 ### Changed in specification 1.1
 
@@ -48,5 +53,5 @@ First release. Implements version 1.1 of the DecisionNode SDK specification, sta
 - Guzzle as the HTTP client (the default one, or your own for a proxy or TLS options), and optional PSR-3 debug logging. A caller's client must be a `GuzzleHttp\Client` with one of Guzzle's own handlers (curl, curl multi, stream or mock); any other client or handler type is refused with `InvalidArgumentException`, since the SDK cannot show that it never follows a redirect. A response from another host, or a request sent more than once in one attempt, is refused. Other PSR-18 clients are not accepted.
 - For an `https` base URL, a caller's client that turns off TLS certificate or host name checks (`verify` off, curl's peer or host verification off, or an unsafe `stream_context`) is refused with `InvalidArgumentException`.
 - The base error is exported under the name `DecisionNodeError`, and every error class extends it.
-- The conformance tests run every case of suite 1.5 through the blocking methods and through their `Async` forms, and fail when `DECISIONNODE_CONFORMANCE_DIR` is not set.
+- The conformance tests run every case of suite 1.6 through the blocking methods and through their `Async` forms, and fail when `DECISIONNODE_CONFORMANCE_DIR` is not set.
 - CI pins every action to a commit SHA, checks out with `persist-credentials: false`, and checks the conformance suite out at one pinned commit.
