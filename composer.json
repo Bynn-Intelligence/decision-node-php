@@ -1,9 +1,9 @@
 {
     "name": "bynn/decisionnode",
-    "description": "PHP client for the DecisionNode API: ask yes-or-no, choice and score questions about any input and get calibrated probabilities back.",
+    "description": "PHP client for the DecisionNode API: ask yes-or-no, choice, score and number questions about any input and get calibrated probabilities back, one by one, in live sessions or in batches.",
     "type": "library",
     "license": "MIT",
-    "keywords": ["decisionnode", "decision", "classification", "scoring", "api", "sdk"],
+    "keywords": ["decisionnode", "decision", "classification", "scoring", "sessions", "batch", "api", "sdk"],
     "homepage": "https://decisionnode.com",
     "authors": [
         {
@@ -17,6 +17,7 @@
         "guzzlehttp/guzzle": "^7.8",
         "guzzlehttp/promises": "^2.0",
         "guzzlehttp/psr7": "^2.6",
+        "phrity/websocket": "3.8.1",
         "psr/http-message": "^1.1 || ^2.0",
         "psr/log": "^1.1 || ^2.0 || ^3.0"
     },
