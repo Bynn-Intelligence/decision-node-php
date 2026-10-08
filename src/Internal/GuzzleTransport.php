@@ -178,7 +178,7 @@ final class GuzzleTransport implements Transport
         }
     }
 
-    public function send(RequestInterface $request, ?float $delay, float $timeout, bool $bare = false): PromiseInterface
+    public function send(RequestInterface $request, ?float $delay, float $timeout, bool $bare = false, bool $stream = false): PromiseInterface
     {
         /** @var TransferStats|null $stats */
         $stats = null;
@@ -210,6 +210,10 @@ final class GuzzleTransport implements Transport
             $curl[\CURLOPT_FOLLOWLOCATION] = false;
             $options[RequestOptions::CURL] = $curl;
         }
+        if ($stream) {
+            // The body is read as the caller consumes it (Guzzle's stream handler).
+            $options[RequestOptions::STREAM] = true;
+        }
         if ($bare) {
             // No default header of the HTTP client (such as its User-Agent):
             // a storage PUT carries exactly the headers the API returned.
@@ -218,7 +222,7 @@ final class GuzzleTransport implements Transport
         if ($delay !== null) {
             // The wait between attempts is Guzzle's own `delay` option, so it
             // does not block other requests in flight.
-            $options[RequestOptions::DELAY] = $delay * 1000;
+            $options[RequestOptions::DELAY] = (int) round($delay * 1000);
         }
 
         try {
@@ -270,6 +274,58 @@ final class GuzzleTransport implements Transport
         if ($seconds !== null && $seconds > $timeout) {
             throw new TimeoutError(sprintf('The request timed out after %s s.', self::seconds($timeout)));
         }
+    }
+
+    public function socketSettings(): array
+    {
+        $ssl = [];
+        $context = $this->config('stream_context');
+        if (is_array($context) && is_array($context['ssl'] ?? null)) {
+            $ssl = $context['ssl'];
+        }
+        $verify = $this->config(RequestOptions::VERIFY);
+        if (is_string($verify) && $verify !== '') {
+            $ssl[is_dir($verify) ? 'capath' : 'cafile'] = $verify;
+        }
+        $cert = $this->config(RequestOptions::CERT);
+        if (is_array($cert) && is_string($cert[0] ?? null)) {
+            $ssl['local_cert'] = $cert[0];
+            if (is_string($cert[1] ?? null)) {
+                $ssl['passphrase'] = $cert[1];
+            }
+        } elseif (is_string($cert) && $cert !== '') {
+            $ssl['local_cert'] = $cert;
+        }
+        $key = $this->config(RequestOptions::SSL_KEY);
+        if (is_array($key) && is_string($key[0] ?? null)) {
+            $ssl['local_pk'] = $key[0];
+            if (is_string($key[1] ?? null)) {
+                $ssl['passphrase'] = $key[1];
+            }
+        } elseif (is_string($key) && $key !== '') {
+            $ssl['local_pk'] = $key;
+        }
+        $curl = $this->config(RequestOptions::CURL);
+        if (is_array($curl)) {
+            foreach (['CURLOPT_CAINFO' => 'cafile', 'CURLOPT_CAPATH' => 'capath', 'CURLOPT_SSLCERT' => 'local_cert', 'CURLOPT_SSLKEY' => 'local_pk'] as $name => $option) {
+                if (defined($name) && is_string($curl[constant($name)] ?? null)) {
+                    $ssl[$option] ??= $curl[constant($name)];
+                }
+            }
+        }
+        // Certificate and host name checks stay on whatever the settings say.
+        $ssl['verify_peer'] = true;
+        $ssl['verify_peer_name'] = true;
+        $ssl['allow_self_signed'] = false;
+
+        $proxy = $this->config(RequestOptions::PROXY);
+        $noProxy = [];
+        if (is_array($proxy)) {
+            $noProxy = array_values(array_filter(is_array($proxy['no'] ?? null) ? $proxy['no'] : [], 'is_string'));
+            $proxy = $proxy['https'] ?? null;
+        }
+
+        return ['ssl' => $ssl, 'proxy' => is_string($proxy) && $proxy !== '' ? $proxy : null, 'no_proxy' => $noProxy];
     }
 
     private function config(string $option): mixed

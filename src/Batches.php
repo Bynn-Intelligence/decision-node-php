@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Bynn\DecisionNode;
 
+use Bynn\DecisionNode\Exception\BadRequestError;
 use Bynn\DecisionNode\Exception\DecisionNodeError;
+use Bynn\DecisionNode\Exception\ValidationError;
 use Bynn\DecisionNode\Exception\ServerError;
 use Bynn\DecisionNode\Internal\Api;
 use Bynn\DecisionNode\Internal\Held;
@@ -15,6 +17,7 @@ use Bynn\DecisionNode\Internal\Prepare;
 use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Promise\Utils;
+use Psr\Http\Message\StreamInterface;
 
 /**
  * The Batch API: many decisions at half the price, answered within 24 hours.
@@ -198,17 +201,62 @@ final class Batches
 
     /**
      * `GET /v1/batches/{id}/results`: one BatchResult per request, in the
-     * order the requests were added.
+     * order the requests were added. The whole file is read, line by line,
+     * however many lines it holds.
      *
      * @return list<BatchResult>
      */
     public function results(string $batchId): array
     {
-        return $this->resultsAsync($batchId)->wait();
+        return iterator_to_array($this->stream($batchId), false);
     }
 
     /**
-     * @return PromiseInterface resolves with list<BatchResult>
+     * The results one at a time, parsed as each line arrives: the response
+     * body is a stream read as it is consumed, so a large results file is
+     * never held in memory whole.
+     *
+     *     foreach ($dn->batches->stream($batch->id) as $line) { ... }
+     *
+     * @return \Generator<int, BatchResult>
+     */
+    public function stream(string $batchId): \Generator
+    {
+        $result = $this->api->request('GET', '/v1/batches/' . rawurlencode($batchId) . '/results', json: false, stream: true)->wait();
+        $body = $result['stream'] ?? null;
+        if (!$body instanceof StreamInterface) {
+            yield from self::parse($result, (string) ($result['text'] ?? ''));
+
+            return;
+        }
+        $buffer = '';
+        $first = true;
+        while (!$body->eof()) {
+            $chunk = $body->read(65_536);
+            if ($chunk === '') {
+                continue;
+            }
+            $buffer .= $chunk;
+            if ($first && ltrim($buffer) !== '') {
+                $first = false;
+                if (str_starts_with(ltrim($buffer), '[')) {
+                    // One JSON array (format=json): read it whole.
+                    yield from self::parse($result, $buffer . $body->getContents());
+
+                    return;
+                }
+            }
+            while (($end = strpos($buffer, "\n")) !== false) {
+                $line = substr($buffer, 0, $end);
+                $buffer = substr($buffer, $end + 1);
+                yield from self::parse($result, $line);
+            }
+        }
+        yield from self::parse($result, $buffer);
+    }
+
+    /**
+     * @return PromiseInterface resolves with list<BatchResult>, the whole file
      */
     public function resultsAsync(string $batchId): PromiseInterface
     {
@@ -216,33 +264,48 @@ final class Batches
             static function (array $result): array {
                 $out = [];
                 $text = (string) $result['text'];
-                $trimmed = ltrim($text);
-                // JSON Lines, or one JSON array when asked for format=json.
-                $lines = str_starts_with($trimmed, '[') ? [$trimmed] : explode("\n", $text);
+                $lines = str_starts_with(ltrim($text), '[') ? [$text] : explode("\n", $text);
                 foreach ($lines as $line) {
-                    if (trim($line) === '') {
-                        continue;
-                    }
-                    try {
-                        $decoded = Json::decode($line);
-                    } catch (\JsonException $e) {
-                        /** @var array<string, string> $headers */
-                        $headers = $result['headers'];
-                        throw new ServerError('A results line is not JSON.', status: $result['status'], requestId: $headers['x-request-id'] ?? null, body: $text, headers: $headers, previous: $e);
-                    }
-                    $shape = Json::decodeObjects($line);
-                    $entries = is_array($decoded) && array_is_list($decoded) ? $decoded : [$decoded];
-                    $shapes = is_array($shape) ? $shape : [$shape];
-                    foreach ($entries as $i => $entry) {
-                        if (is_array($entry)) {
-                            $out[] = BatchResult::fromArray($entry, $shapes[$i] ?? null);
-                        }
+                    foreach (self::parse($result, $line) as $parsed) {
+                        $out[] = $parsed;
                     }
                 }
 
                 return $out;
             },
         );
+    }
+
+    /**
+     * The results of one line (or of one JSON array).
+     *
+     * @param array<string, mixed> $result
+     *
+     * @return list<BatchResult>
+     */
+    private static function parse(array $result, string $line): array
+    {
+        if (trim($line) === '') {
+            return [];
+        }
+        try {
+            $decoded = Json::decode($line);
+        } catch (\JsonException $e) {
+            /** @var array<string, string> $headers */
+            $headers = $result['headers'];
+            throw new ServerError('A results line is not JSON.', status: is_int($result['status']) ? $result['status'] : null, requestId: $headers['x-request-id'] ?? null, body: $line, headers: $headers, previous: $e);
+        }
+        $shape = Json::decodeObjects($line);
+        $entries = is_array($decoded) && array_is_list($decoded) ? $decoded : [$decoded];
+        $shapes = is_array($shape) ? $shape : [$shape];
+        $out = [];
+        foreach ($entries as $i => $entry) {
+            if (is_array($entry)) {
+                $out[] = BatchResult::fromArray($entry, $shapes[$i] ?? null);
+            }
+        }
+
+        return $out;
     }
 
     /**
@@ -274,6 +337,32 @@ final class Batches
      */
     public function lines(iterable $requests, bool $requireOne = false): PromiseInterface
     {
+        $prepared = $this->check($requests, $requireOne);
+        $promises = [];
+        foreach ($prepared as [$head, $model, $state, $questions, $images, $tail]) {
+            $promises[] = $this->images->wires($images)->then(
+                static fn (array $wires): string => Prepare::body($model, $state, $questions, $wires[0], $head, $tail) . "\n",
+            );
+        }
+
+        return Utils::all($promises);
+    }
+
+    /**
+     * Every local check of a create (or, with `$requireOne`, an add): the
+     * custom_id rules, then each request as a decision request. Nothing is
+     * sent or uploaded.
+     *
+     * @param iterable<BatchRequest|array<string, mixed>|object> $requests
+     *
+     * @return list<array{array<string, mixed>, string, mixed, array<string, mixed>, list<mixed>, array<array-key, mixed>}>
+     *
+     * @throws \InvalidArgumentException|BadRequestError|ValidationError
+     *
+     * @internal
+     */
+    public function check(iterable $requests, bool $requireOne = false): array
+    {
         $args = [];
         foreach ($requests as $i => $request) {
             $args[] = self::arguments($request, $i);
@@ -284,14 +373,7 @@ final class Batches
             $prepared[] = $this->prepare($request);
         }
 
-        $promises = [];
-        foreach ($prepared as [$head, $model, $state, $questions, $images, $tail]) {
-            $promises[] = $this->images->wires($images)->then(
-                static fn (array $wires): string => Prepare::body($model, $state, $questions, $wires[0], $head, $tail) . "\n",
-            );
-        }
-
-        return Utils::all($promises);
+        return $prepared;
     }
 
     /**

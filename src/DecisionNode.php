@@ -60,6 +60,9 @@ final class DecisionNode
 
     public const DEFAULT_MAX_RETRIES = 2;
 
+    /** Seconds one storage PUT of an image upload may take, apart from the API attempt's timeout. */
+    public const DEFAULT_UPLOAD_TIMEOUT = 60.0;
+
     public const DEFAULT_CONCURRENCY = 8;
 
     /**
@@ -89,6 +92,8 @@ final class DecisionNode
 
     public readonly int $inlineThreshold;
 
+    public readonly float $uploadTimeout;
+
     /** The Batch API. */
     public readonly Batches $batches;
 
@@ -114,6 +119,8 @@ final class DecisionNode
      * @param int|null                                 $inlineThreshold bytes; default DEFAULT_INLINE_THRESHOLD (524,288)
      * @param (\Closure(): float)|null                  $clock           the current Unix time in seconds, which upload URLs and cached
      *                                                                  uploads are judged by; default the system clock (for tests)
+     * @param float                                    $uploadTimeout   seconds for one storage PUT of an image upload, above 0 (default 60),
+     *                                                                  apart from `timeout`, which covers API requests
      *
      * @throws \InvalidArgumentException for a timeout of 0 or less, a negative maxRetries or inlineThreshold, a base URL
      *                                   that is not https (http is accepted for localhost only), an httpClient that is not a
@@ -130,12 +137,16 @@ final class DecisionNode
         ?LoggerInterface $logger = null,
         ?int $inlineThreshold = null,
         ?\Closure $clock = null,
+        float $uploadTimeout = self::DEFAULT_UPLOAD_TIMEOUT,
     ) {
         if (!is_finite($timeout) || $timeout <= 0.0) {
             throw new \InvalidArgumentException(sprintf('timeout must be a number of seconds above 0, got %s.', var_export($timeout, true)));
         }
         if ($maxRetries < 0) {
             throw new \InvalidArgumentException(sprintf('maxRetries must be 0 or more, got %d.', $maxRetries));
+        }
+        if (!is_finite($uploadTimeout) || $uploadTimeout <= 0.0) {
+            throw new \InvalidArgumentException(sprintf('uploadTimeout must be a number of seconds above 0, got %s.', var_export($uploadTimeout, true)));
         }
         if ($inlineThreshold !== null && $inlineThreshold < 0) {
             throw new \InvalidArgumentException(sprintf('inlineThreshold must be 0 or more, got %d.', $inlineThreshold));
@@ -147,12 +158,13 @@ final class DecisionNode
         $this->timeout = $timeout;
         $this->maxRetries = $maxRetries;
         $this->inlineThreshold = $inlineThreshold ?? self::DEFAULT_INLINE_THRESHOLD;
+        $this->uploadTimeout = $uploadTimeout;
 
         $transport = new GuzzleTransport(
             $httpClient ?? new GuzzleClient(),
             strtolower((string) parse_url($this->baseUrl, PHP_URL_SCHEME)) === 'https',
         );
-        $this->api = new Api($this->baseUrl, $apiKey, $headers, $timeout, $maxRetries, $transport, 'decisionnode-php/' . self::VERSION, $logger);
+        $this->api = new Api($this->baseUrl, $apiKey, $headers, $timeout, $maxRetries, $transport, 'decisionnode-php/' . self::VERSION, $logger, $uploadTimeout);
         $this->images = new Images($this->api, new UploadCache($clock), $this->inlineThreshold, $clock);
         $this->held = new Held();
         $this->batches = new Batches($this->api, $this->images, $this->model, $this->held);
@@ -664,6 +676,23 @@ final class DecisionNode
         ?int $ttlSeconds = null,
         ?float $delay = null,
     ): PromiseInterface {
+        $body = $this->sessionBody($questions, $state, $instructions, $model, $window, $ttlSeconds);
+        $model = (string) $body['model'];
+
+        return $this->api->request('POST', '/v1/sessions', Json::encode($body), Api::RETRY_SESSION_OPEN, delay: $delay)->then(
+            fn (array $result): Session => new Session(self::object($result['body'], $result), $this->api, $this->images, Json::decodeObjects((string) $result['text']), $this->held->limits($model)),
+        );
+    }
+
+    /**
+     * The open body, checked: `model` always, then only the fields given.
+     *
+     * @param iterable<array-key, mixed>|object $questions
+     *
+     * @return array<string, mixed>
+     */
+    private function sessionBody(iterable|object $questions, mixed $state, mixed $instructions, ?string $model, mixed $window, mixed $ttlSeconds): array
+    {
         $body = ['model' => self::nonEmpty($model) ?? $this->model];
         if ($instructions !== null) {
             $body['instructions'] = $instructions;
@@ -678,12 +707,54 @@ final class DecisionNode
         if ($ttlSeconds !== null) {
             $body['ttl_seconds'] = $ttlSeconds;
         }
-        $model = (string) $body['model'];
-        LocalChecks::sessionOpen($body, $this->held->limits($model));
+        LocalChecks::sessionOpen($body, $this->held->limits($body['model']));
 
-        return $this->api->request('POST', '/v1/sessions', Json::encode($body), Api::RETRY_SESSION_OPEN, delay: $delay)->then(
-            fn (array $result): Session => new Session(self::object($result['body'], $result), $this->api, $this->images, Json::decodeObjects((string) $result['text']), $this->held->limits($model)),
-        );
+        return $body;
+    }
+
+    // ---------------------------------------------------------------- checks
+
+    /**
+     * Runs every local check a call runs before sending, exactly as sending
+     * would (limits held from an earlier `models()` included), and throws the
+     * same error. Nothing is sent and nothing is uploaded. Returns when the
+     * request would be sent.
+     *
+     *     $dn->checkRequest('decide', ['state' => $state, 'questions' => $questions, 'images' => $images]);
+     *
+     * `$method` is `decide`, `systemone`, `openSession`, `batches.create` or
+     * `batches.add` (the snake_case names are accepted too); `$request` holds
+     * that call's arguments by name. A session frame is checked with
+     * {@see Session::checkFrame()}.
+     *
+     * @param array<string, mixed>|object $request
+     *
+     * @throws \InvalidArgumentException for an unknown method or an argument problem
+     * @throws BadRequestError|ValidationError what sending would raise for the request's content
+     */
+    public function checkRequest(string $method, array|object $request): void
+    {
+        $args = [];
+        foreach (is_array($request) ? $request : get_object_vars($request) as $name => $value) {
+            $args[lcfirst(str_replace('_', '', ucwords((string) $name, '_')))] = $value;
+        }
+        $questions = $args['questions'] ?? [];
+        if (!is_iterable($questions) && !is_object($questions)) {
+            throw new \InvalidArgumentException('questions must be a map of questions.');
+        }
+        $images = $args['images'] ?? null;
+        $images = is_iterable($images) ? $images : null;
+        $model = isset($args['model']) && is_string($args['model']) ? $args['model'] : null;
+        $requests = $args['requests'] ?? [];
+
+        match (strtolower(str_replace(['_', '.'], '', $method))) {
+            'decide' => $this->checked($args['state'] ?? '', Prepare::questions($questions), Prepare::images($images), $model),
+            'systemone' => $this->checked($args['state'] ?? '', Prepare::questions($questions, strict: true), Prepare::images($images), $model, 'systemone'),
+            'opensession' => $this->sessionBody($questions, $args['state'] ?? null, $args['instructions'] ?? null, $model, $args['window'] ?? null, $args['ttlSeconds'] ?? null),
+            'batchescreate' => $this->batches->check(is_iterable($requests) ? $requests : []),
+            'batchesadd' => $this->batches->check(is_iterable($requests) ? $requests : [], requireOne: true),
+            default => throw new \InvalidArgumentException(sprintf('checkRequest takes decide, systemone, openSession, batches.create or batches.add, got "%s".', $method)),
+        };
     }
 
     /**

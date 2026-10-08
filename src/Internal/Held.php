@@ -32,13 +32,24 @@ final class Held
     }
 
     /**
-     * The held entry of a model, with its name under `model`, or [].
+     * The held entry of a model, with the name the request used under
+     * `model`, or []. A model is found by its entry's name, else by the entry
+     * that states the name as its `alias` or its pinned `version`; a name the
+     * held list does not state holds nothing.
      *
      * @return array<string, mixed>
      */
     public function limits(string $model): array
     {
         $entry = $this->models[$model] ?? null;
+        if ($entry === null) {
+            foreach ($this->models as $candidate) {
+                if (($candidate['alias'] ?? null) === $model || ($candidate['version'] ?? null) === $model) {
+                    $entry = $candidate;
+                    break;
+                }
+            }
+        }
 
         return $entry === null ? [] : ['model' => $model] + $entry;
     }

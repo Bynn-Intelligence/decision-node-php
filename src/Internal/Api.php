@@ -48,13 +48,25 @@ final class Api
         private readonly Transport $transport,
         private readonly string $userAgent,
         private readonly ?LoggerInterface $logger = null,
+        public readonly float $uploadTimeout = 60.0,
     ) {
+    }
+
+    /**
+     * @return array{ssl: array<string, mixed>, proxy: string|null, no_proxy: list<string>}
+     */
+    public function socketSettings(): array
+    {
+        return $this->transport->socketSettings();
     }
 
     /**
      * Sends with retries.
      *
      * @param float|null $delay seconds to wait before the first attempt
+     *
+     * @param bool       $stream with `$json` false: resolve once the headers of a success have arrived, the body
+     *                           unread under "stream" (a PSR-7 stream read as it is consumed)
      *
      * @return PromiseInterface resolves with ["status" => int, "headers" => array<string, string>, "body" => mixed, "text" => string];
      *                          with `$json` false, "body" is null and "text" is the raw body
@@ -67,6 +79,7 @@ final class Api
         string $contentType = 'application/json',
         bool $json = true,
         ?float $delay = null,
+        bool $stream = false,
     ): PromiseInterface {
         if ($this->apiKey === null) {
             return Create::rejectionFor(new AuthenticationError(
@@ -74,16 +87,19 @@ final class Api
             ));
         }
 
-        $attempt = function (int $n, ?float $wait) use (&$attempt, $method, $path, $body, $policy, $contentType, $json): PromiseInterface {
+        $attempt = function (int $n, ?float $wait) use (&$attempt, $method, $path, $body, $policy, $contentType, $json, $stream): PromiseInterface {
             $request = $this->buildRequest($method, $path, $body, $contentType);
             $started = microtime(true) + ($wait ?? 0.0);
 
-            return $this->transport->send($request, $wait, $this->timeout)->then(
-                function (ResponseInterface $response) use (&$attempt, $n, $method, $path, $started, $policy, $json): mixed {
+            return $this->transport->send($request, $wait, $this->timeout, false, $stream && !$json)->then(
+                function (ResponseInterface $response) use (&$attempt, $n, $method, $path, $started, $policy, $json, $stream): mixed {
                     $status = $response->getStatusCode();
                     $headers = self::headers($response);
                     $this->log($method, $path, $n, $status, $headers['x-request-id'] ?? null, $started);
 
+                    if ($status >= 200 && $status < 300 && $stream && !$json) {
+                        return ['status' => $status, 'headers' => $headers, 'body' => null, 'text' => '', 'stream' => $response->getBody()];
+                    }
                     if ($status >= 200 && $status < 300) {
                         $text = (string) $response->getBody();
                         if (!$json) {
@@ -159,7 +175,9 @@ final class Api
             $started = microtime(true) + ($wait ?? 0.0);
             $path = (string) parse_url($url, PHP_URL_PATH);
 
-            return $this->transport->send($request, $wait, $this->timeout, true)->then(
+            // A storage PUT has its own timeout: an image of several MB may
+            // take longer than an API attempt is allowed.
+            return $this->transport->send($request, $wait, $this->uploadTimeout, true)->then(
                 function (ResponseInterface $response) use (&$attempt, $n, $started, $path): mixed {
                     $status = $response->getStatusCode();
                     $this->log('PUT', $path, $n, $status, null, $started);

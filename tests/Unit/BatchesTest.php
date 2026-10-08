@@ -195,7 +195,7 @@ final class BatchesTest extends TestCase
         self::assertSame('completed', $batch->state);
         self::assertCount(1, $results);
         $delays = array_map(static fn (array $h): mixed => $h['options']['delay'] ?? null, $this->history);
-        self::assertSame([null, null, null, 10000.0, 30000.0, null], $delays);
+        self::assertSame([null, null, null, 10000, 30000, null], $delays);
     }
 
     public function testRunBatchCancelsTheDraftWhenAddFails(): void

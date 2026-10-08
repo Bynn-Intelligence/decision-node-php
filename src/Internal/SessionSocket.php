@@ -8,6 +8,7 @@ use Bynn\DecisionNode\Exception\ConnectionError;
 use Bynn\DecisionNode\Exception\DecisionNodeError;
 use Bynn\DecisionNode\Exception\TimeoutError;
 use Bynn\DecisionNode\SessionClosed;
+use Phrity\Net\Context;
 use Psr\Http\Message\MessageInterface;
 use WebSocket\Client;
 use WebSocket\Connection;
@@ -40,11 +41,12 @@ final class SessionSocket implements ProcessHttpIncomingInterface
     }
 
     /**
-     * @param array<string, string> $headers
+     * @param array<string, string>                                                $headers
+     * @param array{ssl: array<string, mixed>, proxy: string|null, no_proxy: list<string>} $settings the HTTP client's TLS and proxy settings
      *
      * @throws \InvalidArgumentException|DecisionNodeError
      */
-    public static function open(string $url, array $headers, float $timeout): self
+    public static function open(string $url, array $headers, float $timeout, array $settings = ['ssl' => [], 'proxy' => null, 'no_proxy' => []]): self
     {
         $scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
         $host = strtolower(trim((string) parse_url($url, PHP_URL_HOST), '[]'));
@@ -54,6 +56,12 @@ final class SessionSocket implements ProcessHttpIncomingInterface
 
         $client = new Client($url);
         $client->setTimeout($timeout);
+        // The HTTP client's CA bundle and client certificate apply here too;
+        // certificate and host name checks stay on.
+        $client->setContext(new Context(stream_context_create(['ssl' => $settings['ssl']])));
+        if ($settings['proxy'] !== null && $scheme === 'wss' && !self::bypass($host, $settings['no_proxy'])) {
+            $client->setStreamFactory(new TunnelSocketFactory($settings['proxy']));
+        }
         $socket = new self($client);
         $client->addMiddleware(new CloseHandler());
         $client->addMiddleware(new PingResponder());
@@ -77,6 +85,24 @@ final class SessionSocket implements ProcessHttpIncomingInterface
         }
 
         return $socket;
+    }
+
+    /**
+     * Whether a host is on the proxy's bypass list (a name, or a domain
+     * suffix starting with a dot; "*" bypasses every host).
+     *
+     * @param list<string> $noProxy
+     */
+    private static function bypass(string $host, array $noProxy): bool
+    {
+        foreach ($noProxy as $entry) {
+            $entry = strtolower(trim($entry));
+            if ($entry === '*' || $entry === $host || ($entry !== '' && str_ends_with($host, '.' . ltrim($entry, '.')))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function __toString(): string

@@ -120,9 +120,28 @@ final class Session
         }
         $this->close();
         $this->closed = null;
-        $this->socket = SessionSocket::open($this->streamUrl, $this->api->handshakeHeaders(), $this->api->timeout);
+        $this->socket = SessionSocket::open($this->streamUrl, $this->api->handshakeHeaders(), $this->api->timeout, $this->api->socketSettings());
 
         return $this;
+    }
+
+    /**
+     * Runs every local check `send()` runs on this frame and throws the same
+     * error, without sending or uploading anything. Returns when the frame
+     * would be sent.
+     *
+     * @param Image|array<string, mixed>|\stdClass|null $image
+     * @param list<string>|null                        $questions
+     *
+     * @throws BadRequestError for a frame the API would refuse
+     */
+    public function checkFrame(mixed $frame = null, Image|array|\stdClass|null $image = null, ?array $questions = null, ?bool $reset = null, ?int $seq = null): void
+    {
+        $known = is_array($this->raw['questions'] ?? null) ? $this->questions : null;
+        LocalChecks::frame($frame, $image, $questions, $reset, $seq, $known);
+        if ($image instanceof Image) {
+            LocalChecks::image($image, $this->held, frame: true);
+        }
     }
 
     /**
@@ -144,11 +163,7 @@ final class Session
     {
         // A frame that breaks a fixed rule is refused here: nothing goes on the
         // socket and it takes no seq.
-        $known = is_array($this->raw['questions'] ?? null) ? $this->questions : null;
-        LocalChecks::frame($frame, $image, $questions, $reset, $seq, $known);
-        if ($image instanceof Image) {
-            LocalChecks::image($image, $this->held, frame: true);
-        }
+        $this->checkFrame($frame, $image, $questions, $reset, $seq);
         if ($this->socket === null) {
             throw new ConnectionError('The session is not connected: call connect() first.');
         }

@@ -38,7 +38,7 @@ final class RetryTest extends TestCase
         $dn = $this->client([self::json($status, ['detail' => 'busy'], ['retry-after-ms' => '1']), self::truthBody()]);
         self::assertSame(0.94, $dn->decide('s', ['q' => truth('?')])['q']->truth);
         self::assertCount(2, $this->history);
-        self::assertSame(1.0, $this->history[1]['options']['delay']);
+        self::assertSame(1, $this->history[1]['options']['delay']);
     }
 
     /**
@@ -159,7 +159,7 @@ final class RetryTest extends TestCase
         });
         $dn = new DecisionNode(apiKey: self::KEY, baseUrl: 'https://api.example.test', httpClient: new Client(['handler' => $stack]));
         self::assertSame(0.94, $dn->decide('s', ['q' => truth('?')])['q']->truth);
-        self::assertSame([60000.0], $waits);
+        self::assertSame([60000], $waits);
     }
 
     public function testBackoffIsExponentialWithJitterAndCapped(): void
