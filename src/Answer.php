@@ -7,8 +7,8 @@ namespace Bynn\DecisionNode;
 /**
  * One answer of a decision.
  *
- * Known question types come back as {@see TruthAnswer}, {@see ChoiceAnswer} or
- * {@see ScoreAnswer}. An answer of a type this version of the SDK does not
+ * Known question types come back as {@see TruthAnswer}, {@see ChoiceAnswer},
+ * {@see ScoreAnswer} or {@see NumberAnswer}. An answer of a type this version of the SDK does not
  * know comes back as an {@see UnknownAnswer}, holding its type and raw fields,
  * so a new question type on the server does not break an older client.
  */
@@ -34,8 +34,12 @@ abstract class Answer
         // A known type whose fields are missing or of the wrong type is
         // returned like an unknown type, with its raw fields: one odd answer
         // does not fail the whole decision.
+        // `noul` is the wire name `/v1/systemone` uses for a truth answer; it
+        // is read into a TruthAnswer like `truth`.
         return match (true) {
             $type === 'truth' && TruthAnswer::wellFormed($raw) => new TruthAnswer($raw),
+            $type === 'noul' && TruthAnswer::wellFormed($raw, 'noul') => new TruthAnswer($raw, 'noul'),
+            $type === 'number' && NumberAnswer::wellFormed($raw) && self::objects($shape, 'probabilities') => new NumberAnswer($raw),
             $type === 'choice' && ChoiceAnswer::wellFormed($raw) && self::objects($shape, 'probabilities') => new ChoiceAnswer($raw),
             $type === 'score' && ScoreAnswer::wellFormed($raw) && self::objects($shape, 'probabilities', 'legend') => new ScoreAnswer($raw),
             default => new UnknownAnswer($type, $raw),

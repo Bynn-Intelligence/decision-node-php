@@ -19,17 +19,18 @@ final class TruthAnswer extends Answer
      *
      * @param array<array-key, mixed> $raw
      */
-    public static function wellFormed(array $raw): bool
+    public static function wellFormed(array $raw, string $field = 'truth'): bool
     {
-        return self::isNumber($raw['truth'] ?? null);
+        return self::isNumber($raw[$field] ?? null);
     }
 
     /**
      * @param array<array-key, mixed> $raw
+     * @param string                  $field the field holding the value: `truth`, or the wire name `/v1/systemone` uses
      */
-    public function __construct(array $raw)
+    public function __construct(array $raw, string $field = 'truth')
     {
         parent::__construct('truth', $raw);
-        $this->truth = self::number($raw['truth'] ?? null);
+        $this->truth = self::number($raw[$field] ?? null);
     }
 }

@@ -6,8 +6,8 @@ namespace Bynn\DecisionNode;
 
 
 /**
- * A question in its wire form. Build one with {@see truth()}, {@see choice()}
- * or {@see score()} (or the static methods of the same names).
+ * A question in its wire form. Build one with {@see truth()}, {@see choice()},
+ * {@see score()} or {@see number()} (or the static methods of the same names).
  *
  * A plain array in the wire form (`['type' => 'truth', 'instructions' => ...]`)
  * is accepted wherever a Question is, so a request copied from the API
@@ -17,11 +17,13 @@ final class Question implements \JsonSerializable
 {
     /**
      * @param \stdClass|list<mixed>|null $criteria
+     * @param array<string, int|float>   $grid     a number question's min, max and step, as given
      */
     private function __construct(
         public readonly string $type,
         public readonly mixed $instructions,
         private readonly \stdClass|array|null $criteria,
+        private readonly array $grid = [],
     ) {
     }
 
@@ -94,6 +96,24 @@ final class Question implements \JsonSerializable
     }
 
     /**
+     * A number on a grid from `$min` to `$max` in steps of `$step`, answered
+     * with the most likely value, the expected value and the probability of
+     * each likely value. An argument left out is left out of the request, so
+     * the server's defaults apply (0, 255 and 1).
+     */
+    public static function number(mixed $instructions = null, int|float|null $min = null, int|float|null $max = null, int|float|null $step = null): self
+    {
+        $grid = [];
+        foreach (['min' => $min, 'max' => $max, 'step' => $step] as $name => $value) {
+            if ($value !== null) {
+                $grid[$name] = $value;
+            }
+        }
+
+        return new self('number', $instructions, null, $grid);
+    }
+
+    /**
      * The question in its wire form, ready for `json_encode`.
      *
      * @return array<string, mixed>
@@ -106,6 +126,9 @@ final class Question implements \JsonSerializable
         }
         if ($this->criteria !== null) {
             $wire['criteria'] = $this->criteria instanceof \stdClass ? clone $this->criteria : $this->criteria;
+        }
+        foreach ($this->grid as $name => $value) {
+            $wire[$name] = $value;
         }
 
         return $wire;
