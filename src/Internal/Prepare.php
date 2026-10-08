@@ -61,14 +61,33 @@ final class Prepare
     }
 
     /**
-     * A request's body: model, state and questions, then the images.
+     * The videos as a list. Video and Frame objects are written in their wire
+     * forms when the body is encoded; frames always go inline.
+     *
+     * @param iterable<mixed>|null $videos
+     *
+     * @return list<mixed>
+     */
+    public static function videos(?iterable $videos): array
+    {
+        $list = [];
+        foreach ($videos ?? [] as $video) {
+            $list[] = $video;
+        }
+
+        return $list;
+    }
+
+    /**
+     * A request's body: model, state and questions, then the images and the videos.
      *
      * @param array<string, mixed> $questions
      * @param list<mixed>          $images    wire forms
+     * @param list<mixed>          $videos    Video objects or wire forms
      * @param array<string, mixed> $head      fields that go first (a batch line's custom_id)
      * @param array<string, mixed> $tail      fields that go last
      */
-    public static function body(string $model, mixed $state, array $questions, array $images, array $head = [], array $tail = []): string
+    public static function body(string $model, mixed $state, array $questions, array $images, array $videos = [], array $head = [], array $tail = []): string
     {
         $body = $head + [
             'model' => $model,
@@ -77,6 +96,9 @@ final class Prepare
         ];
         if ($images !== []) {
             $body['images'] = $images;
+        }
+        if ($videos !== []) {
+            $body['videos'] = $videos;
         }
 
         return Json::encode($body + $tail);

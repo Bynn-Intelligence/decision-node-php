@@ -16,6 +16,7 @@ use Bynn\DecisionNode\Exception\OverloadedError;
 use Bynn\DecisionNode\Exception\RateLimitError;
 use Bynn\DecisionNode\Exception\RefusalError;
 use Bynn\DecisionNode\Exception\ValidationError;
+use Bynn\DecisionNode\Frame;
 use Bynn\DecisionNode\FrameError;
 use Bynn\DecisionNode\Image;
 use Bynn\DecisionNode\ModelInfo;
@@ -27,6 +28,7 @@ use Bynn\DecisionNode\Session;
 use Bynn\DecisionNode\SessionClosed;
 use Bynn\DecisionNode\TruthAnswer;
 use Bynn\DecisionNode\UnknownAnswer;
+use Bynn\DecisionNode\Video;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Promise\PromiseInterface;
@@ -233,46 +235,56 @@ final class Suite
             while ($j < count($expected) && !empty($expected[$j]->parallel)) {
                 ++$j;
             }
+            // Which received request each expected one could be, then one
+            // assignment that pairs them all (augmenting paths, so sixteen
+            // parallel uploads cost 256 checks, not 16! orders).
+            $fits = [];
             $reasons = [];
-            $held = false;
-            foreach (self::permutations(range($i, $j - 1)) as $perm) {
-                try {
-                    foreach (range($i, $j - 1) as $n => $k) {
-                        self::checkRequest($expected[$k], $log[$perm[$n]], sprintf('requests[%d]', $k));
+            foreach (range($i, $j - 1) as $k) {
+                $fits[$k] = [];
+                foreach (range($i, $j - 1) as $g) {
+                    try {
+                        self::checkRequest($expected[$k], $log[$g], sprintf('requests[%d]', $k));
+                        $fits[$k][] = $g;
+                    } catch (Fail $fail) {
+                        $reasons[] = $fail->getMessage();
                     }
-                    $held = true;
-                    break;
-                } catch (Fail $fail) {
-                    $reasons[] = $fail->getMessage();
                 }
             }
-            if (!$held) {
-                throw new Fail('no order of the parallel requests matches: ' . $reasons[0]);
+            $owner = [];
+            foreach (array_keys($fits) as $k) {
+                $seen = [];
+                if (!self::assign($k, $fits, $owner, $seen)) {
+                    throw new Fail('no order of the parallel requests matches: ' . ($reasons[0] ?? sprintf('requests[%d]', $k)));
+                }
             }
             $i = $j;
         }
     }
 
     /**
-     * @param list<int> $items
+     * Gives expected request `$k` a received one, moving earlier pairings
+     * along when that frees one for it.
      *
-     * @return list<list<int>>
+     * @param array<int, list<int>> $fits  the received requests each expected one matches
+     * @param array<int, int>       $owner received index to the expected index it is paired with
+     * @param array<int, true>      $seen  received requests already tried on this path
      */
-    private static function permutations(array $items): array
+    private static function assign(int $k, array $fits, array &$owner, array &$seen): bool
     {
-        if (count($items) <= 1) {
-            return [$items];
-        }
-        $out = [];
-        foreach ($items as $n => $item) {
-            $rest = $items;
-            unset($rest[$n]);
-            foreach (self::permutations(array_values($rest)) as $perm) {
-                $out[] = [$item, ...$perm];
+        foreach ($fits[$k] as $g) {
+            if (isset($seen[$g])) {
+                continue;
+            }
+            $seen[$g] = true;
+            if (!isset($owner[$g]) || self::assign($owner[$g], $fits, $owner, $seen)) {
+                $owner[$g] = $k;
+
+                return true;
             }
         }
 
-        return $out;
+        return false;
     }
 
     private static function checkRequest(\stdClass $exp, \stdClass $got, string $where, bool $anyBody = false): void
@@ -998,6 +1010,10 @@ final class Suite
                         return number($a->instructions ?? null, $a->min ?? null, $a->max ?? null, $a->step ?? null);
                     case '$image':
                         return self::image($a, $ctx);
+                    case '$video':
+                        return self::video($a, $ctx);
+                    case '$frame':
+                        return self::frame($a);
                 }
             }
             $out = [];
@@ -1060,6 +1076,41 @@ final class Suite
         }
 
         return Image::fromData($id, $data, $mediaType);
+    }
+
+    /**
+     * `Video(id, frames, fps, start, end)`, `fps`, `start` and `end` passed only when present.
+     *
+     * @param array<string, mixed> $ctx
+     */
+    private static function video(\stdClass $a, array $ctx): Video
+    {
+        $frames = array_map(static fn (mixed $f): mixed => self::decode($f, $ctx), (array) $a->frames);
+        $named = [];
+        foreach (['fps', 'start', 'end'] as $name) {
+            if (property_exists($a, $name)) {
+                $named[$name] = $a->{$name};
+            }
+        }
+
+        return Video::of((string) $a->id, $frames, ...$named);
+    }
+
+    /**
+     * `Frame(t, data, media_type)`: `path` and `data_base64` as raw bytes,
+     * `data_text` as base64 text unchanged, the media type only when present.
+     */
+    private static function frame(\stdClass $a): Frame
+    {
+        $mediaType = isset($a->media_type) ? (string) $a->media_type : null;
+        if (isset($a->data_text)) {
+            return Frame::fromBase64($a->t, (string) $a->data_text, $mediaType);
+        }
+        $data = isset($a->path)
+            ? (string) file_get_contents(self::dir() . '/' . $a->path)
+            : (string) base64_decode((string) $a->data_base64, true);
+
+        return Frame::fromData($a->t, $data, $mediaType);
     }
 
     /**
@@ -1128,7 +1179,13 @@ final class Suite
             'model' => $d->model,
             'request_id' => $d->requestId,
             'latency_ms' => $d->latencyMs,
-            'usage' => ['input_tokens' => $d->usage->inputTokens, 'output_tokens' => $d->usage->outputTokens],
+            'usage' => [
+                'input_tokens' => $d->usage->inputTokens,
+                'output_tokens' => $d->usage->outputTokens,
+                'video_frames' => $d->usage->videoFrames,
+                'video_seconds' => $d->usage->videoSeconds,
+            ],
+            'warnings' => $d->warnings,
             'safety' => self::safety($d->safety),
             'answers' => self::answers($d->answers),
             'raw' => $d->raw,

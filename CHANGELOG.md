@@ -2,6 +2,22 @@
 
 All notable changes to this package are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the package uses [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - Unreleased
+
+Implements version 1.2 of the DecisionNode SDK specification (`SPEC_VERSION` `"1.2"`).
+
+### Added
+
+- Videos sent as frames: `Video::of($id, $frames, $fps, $start, $end)` and `Frame::fromData()`, `Frame::fromBase64()` and `Frame::fromPath()`, each frame a JPEG, PNG or WebP image with its time in seconds. `decide`, `systemone`, `check`, `classify`, `score`, `number`, `gate`, `decideMany`, `BatchRequest` and `checkRequest` take `videos` beside `images`; a video in its plain wire form is accepted too. Frames always go inline as base64: never uploaded, never counted toward the inline threshold, never resized or re-encoded. Sessions take no videos.
+- The video rules checked before sending, each raising `BadRequestError` (`api_usage_error`) with the server's message: at most 4 videos, an id that is a non-empty string and unique across images and videos, a non-empty list of frames, each frame's `t` a number of at least 0 and larger than the one before it, a JPEG, PNG or WebP media type, `fps` above 0 and at most 4, `start` and `end` of at least 0, `end` after `start`. Frame counts, frame bytes and pixels are left to the server.
+- `Usage::$videoFrames` and `Usage::$videoSeconds`, and `Decision::$warnings` (empty when the API sent none), in decisions and batch results.
+
+### Changed
+
+- Up to 16 images a request (4 before). The 17th is refused before sending with the server's message, `Too many images: 17, the limit is 16.`, and one upload call takes all of a request's images to upload.
+- `videos` sits before `model` in the argument lists of `decide`, `systemone`, the one-question helpers, `gate` and `BatchRequest`; pass `model` by name.
+- The conformance tests run suite 1.7.
+
 ## [0.1.0] - Unreleased
 
 First release. Implements version 1.1 of the DecisionNode SDK specification, stated as `DecisionNode::SPEC_VERSION` and `Bynn\DecisionNode\SPEC_VERSION`.

@@ -2,7 +2,7 @@
 
 The PHP client for the [DecisionNode](https://decisionnode.com) API: ask yes-or-no, choice, score and number questions about any text, JSON or image, and get probabilities back. One-off decisions, live sessions that answer a stream of frames, and batches at half the price.
 
-Implements version 1.1 of the DecisionNode SDK specification, which the package states as `DecisionNode::SPEC_VERSION` (also `Bynn\DecisionNode\SPEC_VERSION`). Requires PHP 8.2 or later.
+Implements version 1.2 of the DecisionNode SDK specification, which the package states as `DecisionNode::SPEC_VERSION` (also `Bynn\DecisionNode\SPEC_VERSION`). Requires PHP 8.2 or later.
 
 ## Install
 
@@ -80,14 +80,14 @@ Answers are read by question id, `$d['route']` or `$d->answers['route']`. An ans
 
 | Method | Does | Returns |
 |---|---|---|
-| `decide($state, $questions, $images, $model)` | One `POST /v1/decide` | `Decision` |
+| `decide($state, $questions, $images, $videos, $model)` | One `POST /v1/decide` | `Decision` |
 | `decideMany($requests, $concurrency = 8)` | One decision per request, at most `$concurrency` at a time | A list of `DecisionResult` in input order: each a `Decision` or the `DecisionNodeError` that request ended with |
 | `check($state, $instructions, $ifTrue, $ifFalse)` | One `truth` question | `TruthAnswer`; a `ServerError` when the answer is missing or malformed |
 | `classify($state, $instructions, $options)` | One `choice` question | `ChoiceAnswer`; a `ServerError` when the answer is missing or malformed |
 | `score($state, $instructions, $levels)` | One `score` question | `ScoreAnswer`; a `ServerError` when the answer is missing or malformed |
 | `number($state, $instructions, $min, $max, $step)` | One `number` question | `NumberAnswer`; a `ServerError` when the answer is missing or malformed |
 | `gate($action, $context)` | Whether an action should run: a `risk` score, a `touches_production` truth and an `allow`, `confirm` or `block` verdict (wording below) | `Decision` |
-| `systemone($state, $questions, $images, $model)` | One `POST /v1/systemone`, the path that takes only truth, choice and score questions and always names a model | `Decision` |
+| `systemone($state, $questions, $images, $videos, $model)` | One `POST /v1/systemone`, the path that takes only truth, choice and score questions and always names a model | `Decision` |
 | `models()` | `GET /v1/models` | A list of `ModelInfo` with `name`, `description`, `releaseDate` and `limits` (every other field of the entry, such as `context_tokens`, `number_max_grid_values`, `upload_max_bytes`, `sessions` and `batch`) |
 | `upload($images)` | Uploads local images whatever their size | One upload id per image |
 | `openSession(...)` | `POST /v1/sessions` | `Session` (see [Sessions](#sessions)) |
@@ -95,7 +95,7 @@ Answers are read by question id, `$d['route']` or `$d->answers['route']`. An ans
 | `batches->create(...)` and the other batch calls, `runBatch(...)` | The Batch API | `Batch`, `BatchResult` (see [Batches](#batches)) |
 | `decideRaw($body)` | Sends `$body` exactly as given | The response body as an array |
 
-`check`, `classify`, `score`, `number` and `gate` also take `$images` and `$model`, like `decide`. `$state` is a string or any JSON value; leaving it out sends an empty string. `decideMany` checks every request before it sends any: a `$concurrency` below 1, an argument problem in any one of the requests (an empty question map, say), or a question or image the API would refuse throws, and nothing is sent, not even the valid requests.
+`check`, `classify`, `score`, `number` and `gate` also take `$images`, `$videos` and `$model`, like `decide`. `$state` is a string or any JSON value; leaving it out sends an empty string. `decideMany` checks every request before it sends any: a `$concurrency` below 1, an argument problem in any one of the requests (an empty question map, say), or a question, image or video the API would refuse throws, and nothing is sent, not even the valid requests.
 
 `gate` sends the state `{"action": ..., "context": ...}` and these three questions, word for word the same in every DecisionNode SDK:
 
@@ -105,7 +105,7 @@ Answers are read by question id, `$d['route']` or `$d->answers['route']`. An ans
 | `touches_production` | truth | Does this action change a production system, production data or anything customers use? | |
 | `verdict` | choice | Should this action run as it is, wait for a person to confirm it, or be blocked? | `allow` "safe to run without asking", `confirm` "a person should confirm it first", `block` "should not run" |
 
-A `Decision` has `answers`, `model` (the resolved model version), `usage->inputTokens`, `usage->outputTokens`, `requestId`, `latencyMs` (the server's), `safety` and `raw` (the parsed body).
+A `Decision` has `answers`, `model` (the resolved model version), `usage->inputTokens`, `usage->outputTokens`, `usage->videoFrames` and `usage->videoSeconds` (for a request with videos, `null` otherwise), `warnings` (a list of strings, empty unless the API sent some), `requestId`, `latencyMs` (the server's), `safety` and `raw` (the parsed body).
 
 ```php
 $answer = $dn->check('Refund me now or I cancel.', 'Is the customer asking for a refund?');
@@ -158,7 +158,7 @@ Image::fromStream('scan', fopen('scan.webp', 'rb'));  // a resource or a PSR-7 s
 Image::fromUploadId('scan', 'upl_...');           // an upload made earlier, within its hour
 ```
 
-A file or stream is read when the `Image` is made, so a missing or unreadable file throws `InvalidArgumentException` there. Before any request, the SDK checks every local image against the API's rules and raises the API's own `BadRequestError` for a fault, without a round trip: JPEG, PNG or WebP by its first bytes, at most 10 MB, at most 40 megapixels read from the image header (the image is never decoded), at most 4 images a request (URLs included), ids unique. No image is resized or re-encoded.
+A file or stream is read when the `Image` is made, so a missing or unreadable file throws `InvalidArgumentException` there. Before any request, the SDK checks every local image against the API's rules and raises the API's own `BadRequestError` for a fault, without a round trip: JPEG, PNG or WebP by its first bytes, at most 10 MB, at most 40 megapixels read from the image header (the image is never decoded), at most 16 images a request (URLs included), ids unique. No image is resized or re-encoded.
 
 How a local image travels is chosen for the shortest response time:
 
@@ -167,6 +167,59 @@ How a local image travels is chosen for the shortest response time:
 - **An upload is shared and reused.** Requests running side by side with the same image share one upload. The client remembers its uploads by the SHA-256 of the bytes, in memory, for the upload's hour (up to 5 minutes before it expires, at most 256 images). The same image in a later request, a `decideMany`, a session frame or a batch line is sent by its upload id whatever its size, with nothing uploaded again. If the API answers that an upload the SDK placed has expired or was used up, the SDK uploads the image again and sends the request once more.
 
 Set `inlineThreshold` on the client to change the threshold (`0` uploads every local image). `upload($images)` uploads whatever the size and returns the upload ids, for a pipeline that wants to upload first and decide later.
+
+How many large images fit in one request is the model's token limit, which the server checks: a request over it is a `ContextLimitError`.
+
+## Videos
+
+Video is available when the API enables it. A video is sent as frames: still images you already hold, such as a camera's JPEG snapshots, each with its time in seconds. Only the frames go to the API: no video file, no video URL and no sound.
+
+```php
+use Bynn\DecisionNode\{Frame, Video};
+
+$d = $dn->decide(
+    state: 'Warehouse camera 4, loading dock, shift B.',
+    videos: [
+        Video::of('dock', [
+            Frame::fromPath(30.0, '/frames/dock-0001.jpg'),
+            Frame::fromPath(30.5, '/frames/dock-0002.jpg'),
+            Frame::fromData(31.0, $jpegBytes),
+        ]),
+    ],
+    questions: ['fall' => truth('Does a person fall in the video?')],
+);
+
+$d['fall']->truth;
+$d->usage->videoFrames;    // the frames the API read
+$d->usage->videoSeconds;   // the seconds of video they cover
+$d->warnings;              // for example, a video read at a lower rate than asked
+```
+
+The API reads the frames of a video as one sequence, in order and with their times, and every question sees every video, every image and the state.
+
+```php
+Frame::fromData(0.5, $bytes);                    // JPEG, PNG or WebP; the media type is read from the bytes
+Frame::fromBase64(0.5, $base64, 'image/jpeg');   // base64 text, sent as given, with its media type
+Frame::fromPath(0.5, '/frames/0002.jpg');        // read when the Frame is made
+
+Video::of('dock', $frames, fps: 4, start: 30, end: 60);
+```
+
+- `t` is the frame's time in seconds, at least 0 and larger than the frame before it. Seconds from the start of the clip are the usual form; a camera's own clock works too.
+- `fps` caps how many frames a second the API reads (above 0, at most 4; 2 when left out). A frame closer to the one read before it than 1/fps seconds is skipped.
+- `start` and `end` choose the window `[start, end)` on the frames' own times. Left out, every frame is read.
+- Up to 4 videos a request, beside up to 16 images. Ids are unique across a request's images and videos.
+- Frames always go inline as base64: they are never uploaded, never counted toward the inline threshold of images, and never resized or re-encoded.
+
+Before sending, the SDK checks the rules above and raises the API's own `BadRequestError` (`api_usage_error`) with the server's message, without a round trip: more than 4 videos, a missing or repeated id, no frames, a time that is negative or not larger than the one before it, a media type that is not JPEG, PNG or WebP, an `fps` outside the range, a negative `start` or `end`, an `end` not after `start`. How many frames a request may carry, each frame's bytes and size, and the token budget are the server's to judge.
+
+Videos work in `decide`, `systemone`, the one-question helpers, `gate`, `decideMany`, batch requests and `checkRequest`. Sessions take no videos. A video in its plain wire form, `['id' => 'dock', 'fps' => 2, 'frames' => [['t' => 0.0, 'media_type' => 'image/jpeg', 'data' => $base64]]]`, is accepted wherever a `Video` is.
+
+To turn a video file into frames, use the `dn` command line, which samples the file on your machine and sends only the frames:
+
+```sh
+dn truth "Does a person fall in the video?" --video dock.mp4 --fps 2
+```
 
 ## Sessions
 
@@ -243,7 +296,7 @@ Each call is also yours to use, as `$dn->batches->...`:
 | `stream($batchId)` | The same, read line by line as the body arrives | A generator of `BatchResult`, so a large results file is never held in memory whole |
 | `cancel($batchId)` | `POST /v1/batches/{id}/cancel` | `Batch` |
 
-A request is an array with `custom_id` and the arguments of `decide` (`state`, `questions`, `images`, `model`), or a `BatchRequest`. Every request is checked before anything is sent, and each line's local images follow the image rules above. `create`, `add` and `finalize` are retried only on 429 and 529, never after a timeout or a lost answer, so a batch is never created twice; a `finalize` whose earlier attempt went through returns the batch. The other calls are retried like every call.
+A request is an array with `custom_id` and the arguments of `decide` (`state`, `questions`, `images`, `videos`, `model`), or a `BatchRequest`. Every request is checked before anything is sent, and each line's local images follow the image rules above; a line's videos go with it, frames inline. `create`, `add` and `finalize` are retried only on 429 and 529, never after a timeout or a lost answer, so a batch is never created twice; a `finalize` whose earlier attempt went through returns the batch. The other calls are retried like every call.
 
 ## Errors
 
@@ -285,7 +338,7 @@ The SDK checks every fixed rule the API documents before sending, so the server 
 | Fault | Raised as |
 |---|---|
 | A choice with no options or more than 255, a score with more than 10 levels, a truth question with neither instructions nor criteria, a number question without instructions | `BadRequestError` with the API's message and no `errorType` |
-| An unknown question type (on `systemone`, a number question too), objects and arrays nested more than 128 deep, an image fault (not JPEG, PNG or WebP, over 10 MB or 40 megapixels, more than 4 images, an empty or repeated id, an image URL that is not `https`), an upload id given with another media type, a batch request without a valid or with a repeated `custom_id`, an empty `add`, `list` paging out of range | `BadRequestError`, `errorType` `api_usage_error` |
+| An unknown question type (on `systemone`, a number question too), objects and arrays nested more than 128 deep, an image fault (not JPEG, PNG or WebP, over 10 MB or 40 megapixels, more than 16 images, an empty or repeated id, an image URL that is not `https`), a video fault (see [Videos](#videos)), an upload id given with another media type, a batch request without a valid or with a repeated `custom_id`, an empty `add`, `list` paging out of range | `BadRequestError`, `errorType` `api_usage_error` |
 | An image URL over 2,048 characters, with user information, on a port other than 443, or on a literal private, loopback or reserved address | `BadRequestError`, `errorType` `image_url_refused` |
 | A question or state of the wrong shape or type, a score with no levels, a number grid fault (`min`, `max` or `step` not a number, beyond 2^53, more than 6 decimals, `step` not above 0, `min` above `max`, more than 4,096 values), a session `window` outside 1 to 64 or `ttl_seconds` outside 1 to 3,600 | `ValidationError` with the `entries` the API would list |
 
@@ -294,7 +347,7 @@ A frame that breaks a rule (no frame and no image, an empty frame, an unknown or
 To check a request without sending it, for example while a user is still editing it, call `checkRequest()` with the call's name and arguments, or `checkFrame()` on a session with `send()`'s arguments. Each runs every check sending would run, throws the same error, sends and uploads nothing, and returns when the request would be sent:
 
 ```php
-$dn->checkRequest('decide', ['state' => $state, 'questions' => $questions, 'images' => $images]);
+$dn->checkRequest('decide', ['state' => $state, 'questions' => $questions, 'images' => $images, 'videos' => $videos]);
 $dn->checkRequest('openSession', ['questions' => $questions, 'window' => 16]);
 $dn->checkRequest('batches.create', ['requests' => $requests]);   // also systemone and batches.add
 $session->checkFrame(frame: $reading, questions: ['abort']);
@@ -385,7 +438,7 @@ composer test          # unit tests
 composer analyse       # static analysis
 ```
 
-The conformance tests run the language-neutral DecisionNode conformance cases (suite 1.6) against their mock server, every case once through the blocking methods and once through their `Async` forms (sessions are blocking in both runs): set `DECISIONNODE_CONFORMANCE_DIR` to the suite's directory and run `composer conformance`. Without that variable the conformance tests fail; they never skip. CI checks the suite out at a pinned commit, set once as `CONFORMANCE_REF` in `.github/workflows/ci.yml`, and every action in the workflow is pinned to a commit SHA.
+The conformance tests run the language-neutral DecisionNode conformance cases (suite 1.7) against their mock server, every case once through the blocking methods and once through their `Async` forms (sessions are blocking in both runs): set `DECISIONNODE_CONFORMANCE_DIR` to the suite's directory and run `composer conformance`. Without that variable the conformance tests fail; they never skip. CI checks the suite out at a pinned commit, set once as `CONFORMANCE_REF` in `.github/workflows/ci.yml`, and every action in the workflow is pinned to a commit SHA.
 
 ## License
 

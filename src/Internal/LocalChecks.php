@@ -6,13 +6,15 @@ namespace Bynn\DecisionNode\Internal;
 
 use Bynn\DecisionNode\Exception\BadRequestError;
 use Bynn\DecisionNode\Exception\ValidationError;
+use Bynn\DecisionNode\Frame;
 use Bynn\DecisionNode\Image;
+use Bynn\DecisionNode\Video;
 
 /**
  * Every fixed rule the API documents, checked before anything is sent, so the
  * server never sees a request the client could have refused. The checks run
  * in the server's order (the nesting limit, every 422 entry, the first 400 in
- * question order, then the images) and a fault raises what the server would
+ * question order, then the images, then the videos) and a fault raises what the server would
  * answer: the same class, the same error type, the documented message, and
  * for a 422 the server's entries. A local error has no status and no request
  * id. A rule whose value only the models list states is checked against the
@@ -23,7 +25,9 @@ use Bynn\DecisionNode\Image;
  */
 final class LocalChecks
 {
-    public const MAX_IMAGES = 4;
+    public const MAX_IMAGES = 16;
+    public const MAX_VIDEOS = 4;
+    public const MAX_FPS = 4;
     public const MAX_IMAGE_BYTES = 10_485_760;
     public const MAX_IMAGE_PIXELS = 40_000_000;
     public const MAX_URL_LENGTH = 2048;
@@ -53,20 +57,26 @@ final class LocalChecks
 
     /**
      * A decision request (`/v1/decide`, `/v1/systemone`, a batch line): the
-     * body's rules, then its images.
+     * body's rules, then its images, then its videos.
      *
      * @param array<string, mixed> $questions wire forms by id
      * @param list<mixed>          $images    Image objects or wire maps
      * @param array<string, mixed> $limits    the models list entry the client holds for the model, or []
+     * @param list<mixed>          $videos    Video objects or wire maps
      *
      * @throws BadRequestError|ValidationError
+     * @throws \InvalidArgumentException for a video that is neither a Video nor a wire map
      */
-    public static function decision(string $model, mixed $state, array $questions, array $images, array $limits, string $profile = 'decide'): void
+    public static function decision(string $model, mixed $state, array $questions, array $images, array $limits, string $profile = 'decide', array $videos = []): void
     {
         $probe = ['model' => $model, 'state' => $state ?? '', 'questions' => (object) $questions];
         if ($images !== []) {
             // Placeholders, so the nesting counts the images without their bytes.
             $probe['images'] = array_fill(0, count($images), ['id' => '']);
+        }
+        if ($videos !== []) {
+            // A video and one frame, without their bytes, as the server counts them.
+            $probe['videos'] = array_fill(0, count($videos), ['id' => '', 'frames' => [['t' => 0]]]);
         }
         self::nesting($probe);
         $entries = [];
@@ -74,7 +84,8 @@ final class LocalChecks
             array_push($entries, ...self::sdlEntries(['body', 'state'], self::json($state)));
         }
         self::questions($questions, $profile, $limits, $entries);
-        self::images($images, $limits);
+        $ids = self::images($images, $limits);
+        self::videos($videos, $ids);
     }
 
     /**
@@ -218,13 +229,15 @@ final class LocalChecks
      * @param list<mixed>          $images Image objects or wire maps
      * @param array<string, mixed> $limits
      *
+     * @return array<string, true> the image ids
+     *
      * @throws BadRequestError
      */
-    public static function images(array $images, array $limits = []): void
+    public static function images(array $images, array $limits = []): array
     {
         $most = self::positive($limits['max_images'] ?? null) ?? self::MAX_IMAGES;
         if (count($images) > $most) {
-            throw self::bad(sprintf('Too many images. Must have at most %d images.', $most));
+            throw self::bad(sprintf('Too many images: %d, the limit is %d.', count($images), $most));
         }
         $seen = [];
         foreach ($images as $i => $image) {
@@ -238,6 +251,89 @@ final class LocalChecks
             $seen[$id] = true;
             if ($image instanceof Image) {
                 self::image($image, $limits);
+            }
+        }
+
+        return $seen;
+    }
+
+    /**
+     * The video rules, in the server's order: how many, then each video in
+     * turn (its id, unique across the images and videos, its frames, each
+     * frame's time and media type, then fps and the window). A frame's bytes,
+     * the frame counts and the pixels are the server's to judge.
+     *
+     * @param list<mixed>         $videos   Video objects or wire maps
+     * @param array<string, true> $imageIds the request's image ids
+     *
+     * @throws BadRequestError
+     * @throws \InvalidArgumentException for a video that is neither a Video nor a wire map
+     */
+    public static function videos(array $videos, array $imageIds = []): void
+    {
+        if (count($videos) > self::MAX_VIDEOS) {
+            throw self::bad(sprintf('Too many videos: %d, the limit is %d.', count($videos), self::MAX_VIDEOS));
+        }
+        $seen = $imageIds;
+        foreach ($videos as $i => $video) {
+            if ($video instanceof Video) {
+                $fields = ['id' => $video->id, 'frames' => $video->frames, 'fps' => $video->fps, 'start' => $video->start, 'end' => $video->end];
+            } elseif (is_array($video) || is_object($video)) {
+                $fields = [];
+                foreach (['id', 'frames', 'fps', 'start', 'end'] as $name) {
+                    $fields[$name] = self::field($video, $name);
+                }
+            } else {
+                throw new \InvalidArgumentException(sprintf('Video %d must be a Video or a wire-form map, got %s.', $i, get_debug_type($video)));
+            }
+            $id = $fields['id'];
+            if (!is_string($id) || $id === '') {
+                throw self::bad(sprintf('Video %d needs an id.', $i));
+            }
+            $name = self::repr($id);
+            if (isset($seen[$id])) {
+                throw self::bad(sprintf('Video id %s is used twice (ids are unique across images and videos).', $name));
+            }
+            $seen[$id] = true;
+            $frames = $fields['frames'];
+            if (!is_array($frames) || $frames === [] || !array_is_list($frames)) {
+                throw self::bad(sprintf('Video %s: frames must be a non-empty list of frames.', $name));
+            }
+            $before = null;
+            foreach ($frames as $n => $frame) {
+                if ($frame instanceof Frame) {
+                    [$t, $data, $mediaType] = [$frame->t, $frame->base64 ?? $frame->data, $frame->mediaType];
+                } elseif (is_array($frame) || is_object($frame)) {
+                    [$t, $data, $mediaType] = [self::field($frame, 't'), self::field($frame, 'data'), self::field($frame, 'media_type')];
+                } else {
+                    throw self::bad(sprintf('Video %s: frame %d must be an object with t, media_type and data.', $name, $n));
+                }
+                if (!self::finite($t) || $t < 0) {
+                    throw self::bad(sprintf('Video %s: frame %d: t must be a number of seconds, at least 0.', $name, $n));
+                }
+                if ($before !== null && $t <= $before) {
+                    throw self::bad(sprintf('Video %s: frame %d: t must be larger than the frame before it (%s).', $name, $n, self::shortNumber($before)));
+                }
+                $before = $t;
+                if (!is_string($data)) {
+                    throw self::bad(sprintf('Video %s: frame %d: data must be base64 text.', $name, $n));
+                }
+                if (!in_array($mediaType, self::MEDIA_TYPES, true)) {
+                    throw self::bad(sprintf('Video %s: frame %d: media_type must be one of %s.', $name, $n, implode(', ', self::MEDIA_TYPES)));
+                }
+            }
+            $fps = $fields['fps'];
+            if ($fps !== null && (!self::finite($fps) || $fps <= 0 || $fps > self::MAX_FPS)) {
+                throw self::bad(sprintf('Video %s: fps must be a number above 0 and at most %d.', $name, self::MAX_FPS));
+            }
+            foreach (['start', 'end'] as $bound) {
+                $value = $fields[$bound];
+                if ($value !== null && (!self::finite($value) || $value < 0)) {
+                    throw self::bad(sprintf('Video %s: %s must be a number of seconds, at least 0.', $name, $bound));
+                }
+            }
+            if ($fields['end'] !== null && $fields['end'] <= ($fields['start'] ?? 0)) {
+                throw self::bad(sprintf('Video %s: end must be after start.', $name));
             }
         }
     }
@@ -844,6 +940,63 @@ final class LocalChecks
         }
 
         return null;
+    }
+
+    /**
+     * A JSON number (never a boolean) that is finite.
+     *
+     * @phpstan-assert-if-true int|float $value
+     */
+    private static function finite(mixed $value): bool
+    {
+        return is_int($value) || (is_float($value) && is_finite($value));
+    }
+
+    /**
+     * A string as the server quotes it in a message: in single quotes, or in
+     * double quotes when it holds a single quote and no double quote, with
+     * backslashes, the quote and control characters escaped.
+     */
+    private static function repr(string $text): string
+    {
+        $quote = str_contains($text, "'") && !str_contains($text, '"') ? '"' : "'";
+        $out = '';
+        foreach (mb_str_split($text, 1, 'UTF-8') as $char) {
+            $code = mb_ord($char, 'UTF-8');
+            $out .= match (true) {
+                $char === '\\' => '\\\\',
+                $char === $quote => '\\' . $quote,
+                $char === "\n" => '\\n',
+                $char === "\r" => '\\r',
+                $char === "\t" => '\\t',
+                $code < 0x20 || ($code >= 0x7F && $code < 0xA0) => sprintf('\\x%02x', $code),
+                default => $char,
+            };
+        }
+
+        return $quote . $out . $quote;
+    }
+
+    /**
+     * A number as the server writes it in a message: up to six significant
+     * digits, without trailing zeros (`1.5`, `4`, `1000.25`).
+     */
+    private static function shortNumber(int|float $value): string
+    {
+        if ($value == 0) {
+            return '0';
+        }
+        $sci = sprintf('%.5e', $value);
+        [$mantissa, $exponent] = explode('e', $sci);
+        $exponent = (int) $exponent;
+        if ($exponent >= -4 && $exponent < 6) {
+            $text = sprintf('%.' . (5 - $exponent) . 'f', $value);
+
+            return str_contains($text, '.') ? rtrim(rtrim($text, '0'), '.') : $text;
+        }
+        $mantissa = str_contains($mantissa, '.') ? rtrim(rtrim($mantissa, '0'), '.') : $mantissa;
+
+        return sprintf('%se%s%02d', $mantissa, $exponent < 0 ? '-' : '+', abs($exponent));
     }
 
     private static function positive(mixed $value): ?int

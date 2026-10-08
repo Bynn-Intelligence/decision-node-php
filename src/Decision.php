@@ -9,7 +9,8 @@ namespace Bynn\DecisionNode;
  *
  * Answers are read by question id: `$decision['route']` or
  * `$decision->answers['route']`. Every number is the value the API sent, with
- * no rounding or renormalising.
+ * no rounding or renormalising. `warnings` holds what the API said about the
+ * request, such as a video it read at a lower rate or resolution than asked.
  *
  * @implements \ArrayAccess<array-key, Answer>
  * @implements \IteratorAggregate<array-key, Answer>
@@ -17,8 +18,9 @@ namespace Bynn\DecisionNode;
 final class Decision implements DecisionResult, \ArrayAccess, \Countable, \IteratorAggregate
 {
     /**
-     * @param array<array-key, Answer> $answers by question id
-     * @param array<array-key, mixed>  $raw     the parsed response body
+     * @param array<array-key, Answer> $answers  by question id
+     * @param array<array-key, mixed>  $raw      the parsed response body
+     * @param list<string>             $warnings as the API sent them; empty when it sent none
      */
     public function __construct(
         public readonly array $answers,
@@ -28,6 +30,7 @@ final class Decision implements DecisionResult, \ArrayAccess, \Countable, \Itera
         public readonly int|float|null $latencyMs,
         public readonly ?Safety $safety,
         public readonly array $raw,
+        public readonly array $warnings = [],
     ) {
     }
 
@@ -51,6 +54,13 @@ final class Decision implements DecisionResult, \ArrayAccess, \Countable, \Itera
         }
 
         $usage = is_array($body['usage'] ?? null) ? $body['usage'] : [];
+        $seconds = $usage['video_seconds'] ?? null;
+        $warnings = [];
+        foreach (is_array($body['warnings'] ?? null) ? $body['warnings'] : [] as $warning) {
+            if (is_string($warning)) {
+                $warnings[] = $warning;
+            }
+        }
 
         $latency = null;
         $header = isset($headers['x-decisionnode-latency-ms']) ? trim($headers['x-decisionnode-latency-ms']) : null;
@@ -65,11 +75,14 @@ final class Decision implements DecisionResult, \ArrayAccess, \Countable, \Itera
             usage: new Usage(
                 is_int($usage['input_tokens'] ?? null) ? $usage['input_tokens'] : null,
                 is_int($usage['output_tokens'] ?? null) ? $usage['output_tokens'] : null,
+                is_int($usage['video_frames'] ?? null) ? $usage['video_frames'] : null,
+                is_int($seconds) || is_float($seconds) ? $seconds : null,
             ),
             requestId: $headers['x-request-id'] ?? null,
             latencyMs: $latency,
             safety: Safety::fromHeader($headers['x-decisionnode-safety'] ?? null),
             raw: $body,
+            warnings: $warnings,
         );
     }
 

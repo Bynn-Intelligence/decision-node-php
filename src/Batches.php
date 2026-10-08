@@ -339,9 +339,9 @@ final class Batches
     {
         $prepared = $this->check($requests, $requireOne);
         $promises = [];
-        foreach ($prepared as [$head, $model, $state, $questions, $images, $tail]) {
+        foreach ($prepared as [$head, $model, $state, $questions, $images, $videos, $tail]) {
             $promises[] = $this->images->wires($images)->then(
-                static fn (array $wires): string => Prepare::body($model, $state, $questions, $wires[0], $head, $tail) . "\n",
+                static fn (array $wires): string => Prepare::body($model, $state, $questions, $wires[0], $videos, $head, $tail) . "\n",
             );
         }
 
@@ -355,7 +355,7 @@ final class Batches
      *
      * @param iterable<BatchRequest|array<string, mixed>|object> $requests
      *
-     * @return list<array{array<string, mixed>, string, mixed, array<string, mixed>, list<mixed>, array<array-key, mixed>}>
+     * @return list<array{array<string, mixed>, string, mixed, array<string, mixed>, list<mixed>, list<mixed>, array<array-key, mixed>}>
      *
      * @throws \InvalidArgumentException|BadRequestError|ValidationError
      *
@@ -384,7 +384,7 @@ final class Batches
     private static function arguments(mixed $request, int|string $index): array
     {
         if ($request instanceof BatchRequest) {
-            return ['custom_id' => $request->customId, 'state' => $request->state, 'questions' => $request->questions, 'images' => $request->images, 'model' => $request->model];
+            return ['custom_id' => $request->customId, 'state' => $request->state, 'questions' => $request->questions, 'images' => $request->images, 'videos' => $request->videos, 'model' => $request->model];
         }
         if (is_array($request)) {
             $args = $request;
@@ -406,7 +406,7 @@ final class Batches
      *
      * @param array<array-key, mixed> $args
      *
-     * @return array{array<string, mixed>, string, mixed, array<string, mixed>, list<mixed>, array<array-key, mixed>}
+     * @return array{array<string, mixed>, string, mixed, array<string, mixed>, list<mixed>, list<mixed>, array<array-key, mixed>}
      */
     private function prepare(array $args): array
     {
@@ -415,17 +415,19 @@ final class Batches
             throw new \InvalidArgumentException(sprintf('Batch request %s: questions must be a map of questions.', Json::encode($args['custom_id'] ?? null)));
         }
         $images = $args['images'] ?? null;
+        $videos = $args['videos'] ?? null;
         $model = $args['model'] ?? null;
         $model = is_string($model) && $model !== '' ? $model : $this->model;
         $state = $args['state'] ?? '';
         $questions = Prepare::questions($questions);
         $images = Prepare::images(is_iterable($images) ? $images : null);
-        LocalChecks::decision($model, $state, $questions, $images, $this->held->limits($model));
+        $videos = Prepare::videos(is_iterable($videos) ? $videos : null);
+        LocalChecks::decision($model, $state, $questions, $images, $this->held->limits($model), videos: $videos);
 
         $tail = $args;
-        unset($tail['custom_id'], $tail['state'], $tail['questions'], $tail['images'], $tail['model']);
+        unset($tail['custom_id'], $tail['state'], $tail['questions'], $tail['images'], $tail['videos'], $tail['model']);
 
-        return [['custom_id' => $args['custom_id']], $model, $state, $questions, $images, $tail];
+        return [['custom_id' => $args['custom_id']], $model, $state, $questions, $images, $videos, $tail];
     }
 
     /**
