@@ -5,18 +5,26 @@ declare(strict_types=1);
 namespace Bynn\DecisionNode\Tests\Conformance;
 
 use Bynn\DecisionNode\Answer;
+use Bynn\DecisionNode\Batch;
+use Bynn\DecisionNode\BatchPage;
+use Bynn\DecisionNode\BatchResult;
 use Bynn\DecisionNode\ChoiceAnswer;
 use Bynn\DecisionNode\Decision;
 use Bynn\DecisionNode\DecisionNode;
 use Bynn\DecisionNode\Exception\DecisionNodeError;
-use Bynn\DecisionNode\Exception\RateLimitError;
 use Bynn\DecisionNode\Exception\OverloadedError;
+use Bynn\DecisionNode\Exception\RateLimitError;
 use Bynn\DecisionNode\Exception\RefusalError;
 use Bynn\DecisionNode\Exception\ValidationError;
+use Bynn\DecisionNode\FrameError;
 use Bynn\DecisionNode\Image;
 use Bynn\DecisionNode\ModelInfo;
+use Bynn\DecisionNode\NumberAnswer;
+use Bynn\DecisionNode\Reply;
 use Bynn\DecisionNode\Safety;
 use Bynn\DecisionNode\ScoreAnswer;
+use Bynn\DecisionNode\Session;
+use Bynn\DecisionNode\SessionClosed;
 use Bynn\DecisionNode\TruthAnswer;
 use Bynn\DecisionNode\UnknownAnswer;
 use GuzzleHttp\Client as GuzzleClient;
@@ -25,6 +33,7 @@ use GuzzleHttp\Promise\PromiseInterface;
 use Psr\Http\Message\RequestInterface;
 
 use function Bynn\DecisionNode\choice;
+use function Bynn\DecisionNode\number;
 use function Bynn\DecisionNode\score;
 use function Bynn\DecisionNode\truth;
 
@@ -39,12 +48,14 @@ final class Suite
 {
     private const ENV_VARS = ['DECISIONNODE_API_KEY', 'DECISIONNODE_BASE_URL', 'DECISIONNODE_MODEL'];
 
-    /** Keys whose values compare whole rather than by the keys the case lists. */
-    private const EXACT = ['probabilities', 'legend', 'raw', 'entries', 'safety', 'body', 'limits'];
-
     private const ARGUMENT_NAMES = ['true' => 'ifTrue', 'false' => 'ifFalse'];
 
-    private const METHOD_NAMES = ['decide_many' => 'decideMany', 'decide_raw' => 'decideRaw'];
+    private const METHOD_NAMES = [
+        'decide_many' => 'decideMany',
+        'decide_raw' => 'decideRaw',
+        'open_session' => 'openSession',
+        'run_batch' => 'runBatch',
+    ];
 
     /** @var resource|null */
     private static $process = null;
@@ -148,15 +159,32 @@ final class Suite
     }
 
     /**
-     * @return \stdClass {requests: list<\stdClass>, max_in_flight: int}
+     * The mock's record of a session: requests (pongs left out), the pong
+     * count and the peak number of requests in flight.
+     *
+     * @return \stdClass {requests: list<\stdClass>, pongs: int, max_in_flight: int}
      */
     private static function mockLog(string $session, ?string $path = null): \stdClass
     {
-        $ctx = stream_context_create(['http' => ['timeout' => 30, 'ignore_errors' => true]]);
         $query = 'session=' . rawurlencode($session) . ($path === null ? '' : '&path=' . rawurlencode($path));
-        $text = file_get_contents(self::startMock() . '/_mock/requests?' . $query, false, $ctx);
+        $log = json_decode((string) self::control('GET', '/_mock/requests?' . $query), false, 512, JSON_THROW_ON_ERROR);
+        $log->pongs = count(array_filter($log->requests, static fn (\stdClass $r): bool => $r->method === 'PONG'));
+        $log->requests = array_values(array_filter($log->requests, static fn (\stdClass $r): bool => $r->method !== 'PONG'));
 
-        return json_decode((string) $text, false, 512, JSON_THROW_ON_ERROR);
+        return $log;
+    }
+
+    private static function control(string $method, string $path, ?string $body = null): string
+    {
+        $ctx = stream_context_create(['http' => [
+            'method' => $method,
+            'timeout' => 30,
+            'ignore_errors' => true,
+            'header' => $body === null ? '' : "Content-Type: application/json\r\n",
+            'content' => $body ?? '',
+        ]]);
+
+        return (string) file_get_contents(self::startMock() . $path, false, $ctx);
     }
 
     // ------------------------------------------------------------ the five kinds
@@ -164,64 +192,174 @@ final class Suite
     public static function runRequest(\stdClass $case, bool $async = false): void
     {
         $session = self::session();
-        $client = self::client($case, ['x-mock-session' => $session]);
+        $extra = ['x-mock-session' => $session];
+        if (isset($case->mock)) {
+            $extra['x-mock-scenario'] = 'request/' . $case->id;
+        }
+        $client = self::client($case, $extra);
         self::invoke($client, $case->call, $async);
+        usleep(20_000);
         $log = self::mockLog($session)->requests;
-        if (count($log) !== 1) {
-            throw new Fail(sprintf('expected 1 request, the mock received %d', count($log)));
+        $exp = $case->expect;
+        if (isset($exp->request)) {
+            if (count($log) !== 1) {
+                throw new Fail(sprintf('expected 1 request, the mock received %d: %s', count($log), self::paths($log)));
+            }
+            self::checkRequest($exp->request, $log[0], 'request');
+
+            return;
         }
-        $got = $log[0];
-        $exp = $case->expect->request;
+        self::checkRequestList($exp->requests, $log);
+    }
+
+    /**
+     * @param list<\stdClass> $expected
+     * @param list<\stdClass> $log
+     */
+    private static function checkRequestList(array $expected, array $log): void
+    {
+        if (count($log) !== count($expected)) {
+            throw new Fail(sprintf('expected %d requests, the mock received %d: %s', count($expected), count($log), self::paths($log)));
+        }
+        $i = 0;
+        while ($i < count($expected)) {
+            if (empty($expected[$i]->parallel)) {
+                self::checkRequest($expected[$i], $log[$i], sprintf('requests[%d]', $i));
+                ++$i;
+                continue;
+            }
+            // Requests sent side by side may arrive in any order: one assignment must hold.
+            $j = $i;
+            while ($j < count($expected) && !empty($expected[$j]->parallel)) {
+                ++$j;
+            }
+            $reasons = [];
+            $held = false;
+            foreach (self::permutations(range($i, $j - 1)) as $perm) {
+                try {
+                    foreach (range($i, $j - 1) as $n => $k) {
+                        self::checkRequest($expected[$k], $log[$perm[$n]], sprintf('requests[%d]', $k));
+                    }
+                    $held = true;
+                    break;
+                } catch (Fail $fail) {
+                    $reasons[] = $fail->getMessage();
+                }
+            }
+            if (!$held) {
+                throw new Fail('no order of the parallel requests matches: ' . $reasons[0]);
+            }
+            $i = $j;
+        }
+    }
+
+    /**
+     * @param list<int> $items
+     *
+     * @return list<list<int>>
+     */
+    private static function permutations(array $items): array
+    {
+        if (count($items) <= 1) {
+            return [$items];
+        }
+        $out = [];
+        foreach ($items as $n => $item) {
+            $rest = $items;
+            unset($rest[$n]);
+            foreach (self::permutations(array_values($rest)) as $perm) {
+                $out[] = [$item, ...$perm];
+            }
+        }
+
+        return $out;
+    }
+
+    private static function checkRequest(\stdClass $exp, \stdClass $got, string $where, bool $anyBody = false): void
+    {
         if ($got->method !== $exp->method) {
-            throw new Fail(sprintf('method: expected %s, got %s', $exp->method, $got->method));
+            throw new Fail(sprintf('%s method: expected %s, got %s %s', $where, $exp->method, $got->method, $got->path));
         }
-        if ($got->path !== $exp->path) {
-            throw new Fail(sprintf('path: expected %s, got %s', $exp->path, $got->path));
+        if (isset($exp->path) && $got->path !== $exp->path) {
+            throw new Fail(sprintf('%s path: expected %s, got %s', $where, $exp->path, $got->path));
+        }
+        if (isset($exp->path_pattern) && !self::matches($exp->path_pattern, $got->path)) {
+            throw new Fail(sprintf('%s path: %s does not match %s', $where, $got->path, $exp->path_pattern));
+        }
+        if (isset($exp->query)) {
+            parse_str((string) ($got->query ?? ''), $query);
+            if (!Compare::same($exp->query, $query)) {
+                throw new Fail(sprintf('%s query: expected %s, got %s', $where, Compare::show($exp->query), Compare::show($query)));
+            }
+        }
+        if (isset($exp->status) && ($got->status ?? null) !== $exp->status) {
+            throw new Fail(sprintf('%s status: the mock answered %s, expected %s', $where, json_encode($got->status ?? null), $exp->status));
         }
         $headers = array_change_key_case(get_object_vars($got->headers), CASE_LOWER);
         foreach (get_object_vars($exp->headers ?? new \stdClass()) as $name => $value) {
             if (($headers[strtolower((string) $name)] ?? null) !== $value) {
-                throw new Fail(sprintf('header %s: expected %s, got %s', $name, json_encode($value), json_encode($headers[strtolower((string) $name)] ?? null)));
+                throw new Fail(sprintf('%s header %s: expected %s, got %s', $where, $name, json_encode($value), json_encode($headers[strtolower((string) $name)] ?? null)));
             }
         }
         foreach (get_object_vars($exp->header_patterns ?? new \stdClass()) as $name => $pattern) {
             $value = $headers[strtolower((string) $name)] ?? null;
-            if ($value === null || preg_match('~' . str_replace('~', '\~', $pattern) . '~', $value) !== 1) {
-                throw new Fail(sprintf('header %s: %s does not match %s', $name, json_encode($value), $pattern));
+            if ($value === null || !self::matches($pattern, $value)) {
+                throw new Fail(sprintf('%s header %s: %s does not match %s', $where, $name, json_encode($value), $pattern));
             }
         }
         foreach ($exp->absent_headers ?? [] as $name) {
             if (array_key_exists(strtolower($name), $headers)) {
-                throw new Fail(sprintf('header %s must not be sent', $name));
+                throw new Fail(sprintf('%s header %s must not be sent', $where, $name));
             }
         }
+        if (isset($exp->body_base64)) {
+            if (($got->body_base64 ?? null) !== $exp->body_base64) {
+                throw new Fail(sprintf('%s body: the bytes differ from the expected ones', $where));
+            }
 
+            return;
+        }
+        if (isset($exp->body_sha256)) {
+            $digest = hash('sha256', (string) base64_decode((string) ($got->body_base64 ?? ''), true));
+            if ($digest !== $exp->body_sha256) {
+                throw new Fail(sprintf('%s body: sha256 %s, expected %s', $where, $digest, $exp->body_sha256));
+            }
+
+            return;
+        }
         $text = (string) ($got->body_text ?? '');
+        if (property_exists($exp, 'jsonl')) {
+            $lines = self::jsonLines($text);
+            if (!Compare::same($exp->jsonl, $lines)) {
+                throw new Fail(sprintf('%s body lines: expected %s, got %s', $where, Compare::show($exp->jsonl), Compare::show($lines)));
+            }
+
+            return;
+        }
+        if (isset($exp->jsonl_count) || isset($exp->jsonl_checks)) {
+            $lines = self::jsonLines($text);
+            if (isset($exp->jsonl_count) && count($lines) !== $exp->jsonl_count) {
+                throw new Fail(sprintf('%s body: expected %d lines, got %d', $where, $exp->jsonl_count, count($lines)));
+            }
+            foreach ($exp->jsonl_checks ?? [] as $check) {
+                if (!array_key_exists($check->line, $lines)) {
+                    throw new Fail(sprintf('%s body: no line %d', $where, $check->line));
+                }
+                self::checkValue($check, $lines[$check->line], sprintf('%s line %d', $where, $check->line));
+            }
+
+            return;
+        }
         $body = $text === '' ? null : json_decode($text, false, 512, JSON_THROW_ON_ERROR);
         if (property_exists($exp, 'body')) {
             if (!Compare::same($exp->body, $body)) {
-                throw new Fail('body: expected ' . Compare::show($exp->body) . ', got ' . $text);
+                throw new Fail(sprintf('%s body: expected %s, got %s', $where, Compare::show($exp->body), Compare::show($body)));
             }
-        } elseif (!property_exists($exp, 'body_checks') && $text !== '') {
-            throw new Fail('expected no body, got ' . $text);
+        } elseif (!property_exists($exp, 'body_checks') && $text !== '' && !$anyBody) {
+            throw new Fail(sprintf('%s: expected no body, got %s', $where, Compare::show($text)));
         }
         foreach ($exp->body_checks ?? [] as $check) {
-            [$found, $value] = Compare::pointer($body, $check->pointer);
-            if (!$found) {
-                throw new Fail('body' . $check->pointer . ': missing');
-            }
-            if (property_exists($check, 'equals') && !Compare::same($check->equals, $value)) {
-                throw new Fail('body' . $check->pointer . ': expected ' . Compare::show($check->equals) . ', got ' . Compare::show($value));
-            }
-            if (property_exists($check, 'type') && !Compare::isType($value, $check->type)) {
-                throw new Fail('body' . $check->pointer . ': expected a ' . $check->type);
-            }
-            if (property_exists($check, 'keys')) {
-                $keys = $value instanceof \stdClass ? array_map('strval', array_keys(get_object_vars($value))) : null;
-                if ($keys !== $check->keys) {
-                    throw new Fail('body' . $check->pointer . ': keys expected ' . Compare::show($check->keys) . ', got ' . Compare::show($keys));
-                }
-            }
+            self::checkValue($check, $body, $where);
         }
         foreach ($exp->ordered_keys ?? [] as $pointer) {
             [, $want] = Compare::pointer($exp->body, $pointer);
@@ -229,9 +367,61 @@ final class Suite
             $wantKeys = array_map('strval', array_keys(get_object_vars($want)));
             $haveKeys = $have instanceof \stdClass ? array_map('strval', array_keys(get_object_vars($have))) : [];
             if ($wantKeys !== $haveKeys) {
-                throw new Fail('body' . $pointer . ': key order expected ' . Compare::show($wantKeys) . ', got ' . Compare::show($haveKeys));
+                throw new Fail(sprintf('%s body%s: key order expected %s, got %s', $where, $pointer, Compare::show($wantKeys), Compare::show($haveKeys)));
             }
         }
+    }
+
+    private static function checkValue(\stdClass $check, mixed $doc, string $where): void
+    {
+        [$found, $value] = Compare::pointer($doc, $check->pointer);
+        if (!empty($check->absent)) {
+            if ($found) {
+                throw new Fail(sprintf('%s body%s: must be absent, got %s', $where, $check->pointer, Compare::show($value)));
+            }
+
+            return;
+        }
+        if (!$found) {
+            throw new Fail(sprintf('%s body%s: missing', $where, $check->pointer));
+        }
+        if (property_exists($check, 'equals') && !Compare::same($check->equals, $value)) {
+            throw new Fail(sprintf('%s body%s: expected %s, got %s', $where, $check->pointer, Compare::show($check->equals), Compare::show($value)));
+        }
+        if (property_exists($check, 'type') && !Compare::isType($value, $check->type)) {
+            throw new Fail(sprintf('%s body%s: expected a %s', $where, $check->pointer, $check->type));
+        }
+        if (property_exists($check, 'pattern') && (!is_string($value) || !self::matches($check->pattern, $value))) {
+            throw new Fail(sprintf('%s body%s: %s does not match %s', $where, $check->pointer, Compare::show($value), $check->pattern));
+        }
+        if (property_exists($check, 'keys')) {
+            $keys = $value instanceof \stdClass ? array_map('strval', array_keys(get_object_vars($value))) : null;
+            if ($keys !== $check->keys) {
+                throw new Fail(sprintf('%s body%s: keys expected %s, got %s', $where, $check->pointer, Compare::show($check->keys), Compare::show($keys)));
+            }
+        }
+    }
+
+    /**
+     * @return list<mixed>
+     */
+    private static function jsonLines(string $text): array
+    {
+        $trimmed = trim($text);
+        if ($trimmed === '') {
+            return [];
+        }
+        if (str_starts_with($trimmed, '[')) {
+            return json_decode($trimmed, false, 512, JSON_THROW_ON_ERROR);
+        }
+        $out = [];
+        foreach (explode("\n", $text) as $line) {
+            if (trim($line) !== '') {
+                $out[] = json_decode($line, false, 512, JSON_THROW_ON_ERROR);
+            }
+        }
+
+        return $out;
     }
 
     public static function runResponse(\stdClass $case, bool $async = false): void
@@ -260,6 +450,16 @@ final class Suite
             if (!Compare::same($exp->raw, $result)) {
                 throw new Fail('raw: expected ' . Compare::show($exp->raw) . ', got ' . Compare::show($result));
             }
+        } elseif (property_exists($exp, 'batch')) {
+            Compare::match($exp->batch, self::batch($result), 'batch');
+        } elseif (property_exists($exp, 'batch_page')) {
+            Compare::match($exp->batch_page, self::batchPage($result), 'batch_page');
+        } elseif (property_exists($exp, 'batch_results')) {
+            self::checkBatchResults($exp->batch_results, $result, 'batch_results');
+        } elseif (property_exists($exp, 'session')) {
+            Compare::match($exp->session, self::sessionValue($result), 'session');
+        } else {
+            throw new Fail('the case expects nothing this harness knows');
         }
     }
 
@@ -296,14 +496,20 @@ final class Suite
         }
         $exp = $case->expect;
         // For scheduled_waits_ms the wait between attempts is replaced by a
-        // recorder: the delay is noted and the retry is sent at once.
+        // recorder: the delay is noted and the request is sent at once.
         $waits = isset($exp->scheduled_waits_ms) ? [] : null;
+        $events = [];
         $started = hrtime(true);
         try {
             // An argument error may come from the constructor (a bad base URL,
             // timeout or maxRetries) or from the call; both count.
             $client = self::client($case, $extra, $waits);
-            $result = self::invoke($client, $case->call, $async);
+            if (isset($case->steps)) {
+                self::runSteps($case, $client, $session, $events, $async);
+                $result = null;
+            } else {
+                $result = self::invoke($client, $case->call, $async);
+            }
         } catch (DecisionNodeError|\InvalidArgumentException $error) {
             $result = $error;
         }
@@ -330,15 +536,27 @@ final class Suite
             if (!$held) {
                 throw new Fail(implode('; ', $reasons));
             }
-        } elseif (count($log) !== $exp->attempts) {
-            throw new Fail(sprintf('attempts: expected %d, the mock received %d', $exp->attempts, count($log)));
+        } elseif (isset($exp->attempts) && count($log) !== $exp->attempts) {
+            throw new Fail(sprintf('attempts: expected %d, the mock received %d: %s', $exp->attempts, count($log), self::paths($log)));
+        }
+        if (isset($exp->request_sequence)) {
+            self::checkSequence($exp->request_sequence, $log);
+        }
+        if (isset($exp->request_counts)) {
+            self::checkCounts($exp->request_counts, $log);
+        }
+        if (isset($exp->session_events)) {
+            self::checkEvents($exp->session_events, $events);
+        }
+        if (isset($exp->pongs)) {
+            self::inRange($exp->pongs, (float) $info->pongs, 'pongs');
         }
         if (isset($exp->outcome)) {
             self::checkOutcome($exp->outcome, $result, 'outcome');
         }
         if (isset($exp->results)) {
             if (!is_array($result) || count($result) !== count($exp->results)) {
-                throw new Fail(sprintf('results: expected %d results', count($exp->results)));
+                throw new Fail(sprintf('results: expected %d results, got %s', count($exp->results), self::describe($result)));
             }
             foreach ($exp->results as $i => $spec) {
                 self::checkOutcome($spec, $result[$i], sprintf('results[%d]', $i));
@@ -359,17 +577,187 @@ final class Suite
         }
         if ($waits !== null) {
             if (count($waits) !== count($exp->scheduled_waits_ms)) {
-                throw new Fail(sprintf('scheduled waits: expected %d, the client scheduled %d', count($exp->scheduled_waits_ms), count($waits)));
+                throw new Fail(sprintf('scheduled waits: expected %d, the client scheduled %d (%s)', count($exp->scheduled_waits_ms), count($waits), json_encode($waits)));
             }
             foreach ($exp->scheduled_waits_ms as $i => $range) {
                 self::inRange($range, $waits[$i], sprintf('scheduled wait %d (ms)', $i + 1));
             }
+        }
+        if (isset($case->steps) && $result instanceof \Throwable) {
+            throw new Fail(sprintf('the steps raised %s: %s', get_class($result), $result->getMessage()));
         }
         foreach ($exp->unrequested_paths ?? [] as $path) {
             $reached = count(self::mockLog('*', $path)->requests);
             if ($reached !== 0) {
                 throw new Fail(sprintf('%s was requested %d times', $path, $reached));
             }
+        }
+    }
+
+    /**
+     * @param list<array<string, mixed>> $events
+     */
+    private static function runSteps(\stdClass $case, DecisionNode $client, string $session, array &$events, bool $async): void
+    {
+        $ctx = [];
+        foreach ($case->steps as $i => $step) {
+            $where = sprintf('steps[%d]', $i);
+            if (isset($step->call)) {
+                try {
+                    $result = self::invoke($client, $step->call, $async, $ctx);
+                } catch (DecisionNodeError|\InvalidArgumentException|SessionClosed $error) {
+                    $result = $error;
+                }
+                if (isset($step->outcome)) {
+                    self::checkOutcome($step->outcome, $result, $where . '.outcome');
+                } elseif ($result instanceof \Throwable) {
+                    throw new Fail(sprintf('%s: the call raised %s: %s', $where, get_class($result), $result->getMessage()));
+                }
+                if (isset($step->save_as)) {
+                    $ctx[$step->save_as] = $result;
+                }
+            } elseif (isset($step->connect)) {
+                try {
+                    self::sessionOf($ctx, $step->connect)->connect();
+                } catch (SessionClosed $closed) {
+                    // A refused handshake may surface here or as the first event: both count.
+                    $events[] = self::event($closed);
+                }
+            } elseif (isset($step->send)) {
+                $args = [];
+                foreach (get_object_vars($step->send) as $name => $value) {
+                    if ($name !== 'session') {
+                        $args[(string) $name] = self::decode($value, $ctx);
+                    }
+                }
+                self::sessionOf($ctx, $step->send->session)->send(...$args);
+            } elseif (isset($step->read)) {
+                $s = self::sessionOf($ctx, $step->read->session);
+                $count = $step->read->count ?? null;
+                $timeout = ($step->read->timeout_ms ?? 10000) / 1000;
+                while (true) {
+                    $event = $s->next($timeout);
+                    if ($event === null) {
+                        throw new Fail(sprintf('%s: no session event arrived in time (%d read so far)', $where, count($events)));
+                    }
+                    $events[] = self::event($event);
+                    if ($event instanceof SessionClosed) {
+                        break;
+                    }
+                    if ($count !== null && --$count === 0) {
+                        break;
+                    }
+                }
+            } elseif (isset($step->end)) {
+                try {
+                    $s = self::sessionOf($ctx, $step->end);
+                    $async ? $s->endAsync()->wait() : $s->end();
+                    $events[] = ['ended' => true];
+                } catch (DecisionNodeError $error) {
+                    $events[] = ['end_error' => ['class' => self::shortName($error), 'status' => $error->status]];
+                }
+            } elseif (isset($step->close)) {
+                self::sessionOf($ctx, $step->close)->close();
+            } elseif (isset($step->mock_clock)) {
+                self::control('POST', '/_mock/clock?session=' . rawurlencode($session), (string) json_encode($step->mock_clock));
+            } elseif (isset($step->sleep_ms)) {
+                usleep((int) $step->sleep_ms * 1000);
+            } else {
+                throw new Fail(sprintf('%s: unknown step %s', $where, json_encode($step)));
+            }
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $ctx
+     */
+    private static function sessionOf(array $ctx, string $name): Session
+    {
+        $session = $ctx[$name] ?? null;
+        if (!$session instanceof Session) {
+            throw new Fail(sprintf('%s is not a session: %s', $name, self::describe($session)));
+        }
+
+        return $session;
+    }
+
+    /**
+     * @param list<\stdClass> $expected
+     * @param list<\stdClass> $log
+     */
+    private static function checkSequence(array $expected, array $log): void
+    {
+        if (count($expected) !== count($log)) {
+            throw new Fail(sprintf('request sequence: expected %d requests, the mock received %d: %s', count($expected), count($log), self::paths($log)));
+        }
+        foreach ($expected as $i => $spec) {
+            $rec = $log[$i];
+            $got = $rec->method . ' ' . $rec->path;
+            if ($rec->method !== $spec->method) {
+                throw new Fail(sprintf('request sequence[%d]: expected %s, got %s', $i, $spec->method, $got));
+            }
+            if (isset($spec->path) && $rec->path !== $spec->path) {
+                throw new Fail(sprintf('request sequence[%d]: expected %s %s, got %s', $i, $spec->method, $spec->path, $got));
+            }
+            if (isset($spec->path_pattern) && !self::matches($spec->path_pattern, $rec->path)) {
+                throw new Fail(sprintf('request sequence[%d]: %s does not match %s', $i, $got, $spec->path_pattern));
+            }
+            if (isset($spec->status) && ($rec->status ?? null) !== $spec->status) {
+                throw new Fail(sprintf('request sequence[%d]: %s answered %s, expected %s', $i, $got, json_encode($rec->status ?? null), $spec->status));
+            }
+            $checks = new \stdClass();
+            foreach (['headers', 'header_patterns', 'absent_headers', 'body_checks', 'jsonl_count', 'jsonl_checks', 'body_base64', 'body_sha256', 'query'] as $key) {
+                if (property_exists($spec, $key)) {
+                    $checks->{$key} = $spec->{$key};
+                }
+            }
+            if (get_object_vars($checks) !== []) {
+                $checks->method = $spec->method;
+                self::checkRequest($checks, $rec, sprintf('request sequence[%d]', $i), anyBody: true);
+            }
+        }
+    }
+
+    /**
+     * @param list<\stdClass> $expected
+     * @param list<\stdClass> $log
+     */
+    private static function checkCounts(array $expected, array $log): void
+    {
+        foreach ($expected as $spec) {
+            $n = count(array_filter($log, static fn (\stdClass $r): bool => $r->method === $spec->method
+                && (!isset($spec->path) || $r->path === $spec->path)
+                && (!isset($spec->path_pattern) || self::matches($spec->path_pattern, $r->path))));
+            $what = $spec->method . ' ' . ($spec->path ?? $spec->path_pattern ?? '');
+            if (isset($spec->count) && $n !== $spec->count) {
+                throw new Fail(sprintf('%s: expected %d requests, got %d', $what, $spec->count, $n));
+            }
+            $range = new \stdClass();
+            foreach (['min', 'max'] as $key) {
+                if (isset($spec->{$key})) {
+                    $range->{$key} = $spec->{$key};
+                }
+            }
+            self::inRange($range, (float) $n, $what);
+        }
+    }
+
+    /**
+     * @param list<\stdClass>            $expected
+     * @param list<array<string, mixed>> $events
+     */
+    private static function checkEvents(array $expected, array $events): void
+    {
+        if (count($expected) !== count($events)) {
+            throw new Fail(sprintf('session events: expected %d, got %d: %s', count($expected), count($events), Compare::show($events)));
+        }
+        foreach ($expected as $i => $spec) {
+            $key = (string) array_key_first(get_object_vars($spec));
+            $event = $events[$i];
+            if (array_keys($event) !== [$key]) {
+                throw new Fail(sprintf('session events[%d]: expected %s, got %s', $i, $key, Compare::show($event)));
+            }
+            Compare::match($spec->{$key}, $event[$key], sprintf('session events[%d].%s', $i, $key));
         }
     }
 
@@ -418,6 +806,9 @@ final class Suite
         if (isset($spec->max_retries)) {
             $args['maxRetries'] = (int) $spec->max_retries;
         }
+        if (isset($spec->inline_threshold)) {
+            $args['inlineThreshold'] = (int) $spec->inline_threshold;
+        }
         if (property_exists($spec, 'base_url')) {
             if ($spec->base_url !== null) {
                 $port = (string) parse_url($mock, PHP_URL_PORT);
@@ -454,34 +845,80 @@ final class Suite
     }
 
     /**
-     * Calls the method, or with `$async` its Async form and waits on the promise.
+     * Calls the method, or with `$async` its Async form when it has one and
+     * waits on the promise.
+     *
+     * @param array<string, mixed> $ctx values saved by earlier steps
      */
-    private static function invoke(DecisionNode $client, \stdClass $call, bool $async = false): mixed
+    private static function invoke(DecisionNode $client, \stdClass $call, bool $async = false, array $ctx = []): mixed
     {
-        $method = (self::METHOD_NAMES[$call->method] ?? $call->method) . ($async ? 'Async' : '');
+        $name = (string) $call->method;
+        $target = $client;
+        if (str_starts_with($name, 'batches.')) {
+            $target = $client->batches;
+            $name = substr($name, strlen('batches.'));
+        }
+        $method = self::METHOD_NAMES[$name] ?? lcfirst(str_replace('_', '', ucwords($name, '_')));
+
         $args = [];
-        foreach (get_object_vars($call->args) as $name => $value) {
-            $name = (string) $name;
-            $phpName = self::ARGUMENT_NAMES[$name] ?? lcfirst(str_replace('_', '', ucwords($name, '_')));
-            $args[$phpName] = $call->method === 'decide_raw' ? $value : self::decode($value);
+        foreach (get_object_vars($call->args) as $arg => $value) {
+            $arg = (string) $arg;
+            $phpName = self::ARGUMENT_NAMES[$arg] ?? lcfirst(str_replace('_', '', ucwords($arg, '_')));
+            $args[$phpName] = $name === 'decide_raw' ? $value : self::decode($value, $ctx);
         }
 
-        $result = $client->{$method}(...$args);
-        if ($async) {
+        if ($name === 'supervise') {
+            return self::supervise($client, $args);
+        }
+
+        if ($async && method_exists($target, $method . 'Async')) {
+            $result = $target->{$method . 'Async'}(...$args);
             if (!$result instanceof PromiseInterface) {
-                throw new Fail($method . ' did not return a promise');
+                throw new Fail($method . 'Async did not return a promise');
             }
 
             return $result->wait();
         }
 
-        return $result;
+        return $target->{$method}(...$args);
     }
 
     /**
-     * Turns `{"$truth": {...}}` and the other builder markers into builder calls.
+     * `supervise` with a feed that yields the readings `feed_interval_ms`
+     * apart and an onReply that collects.
+     *
+     * @param array<string, mixed> $args
+     *
+     * @return array{supervised: true, replies: list<Reply|FrameError>, closed: SessionClosed|null}
      */
-    private static function decode(mixed $value): mixed
+    private static function supervise(DecisionNode $client, array $args): array
+    {
+        $interval = (int) ($args['feedIntervalMs'] ?? 0);
+        $readings = $args['feed'];
+        $feed = (static function () use ($readings, $interval): \Generator {
+            foreach ($readings as $i => $reading) {
+                if ($i > 0) {
+                    usleep($interval * 1000);
+                }
+                yield get_object_vars($reading);
+            }
+        })();
+        $replies = [];
+        $closed = $client->supervise($args['body'], $feed, static function (Reply|FrameError $event) use (&$replies): void {
+            $replies[] = $event;
+        });
+
+        return ['supervised' => true, 'replies' => $replies, 'closed' => $closed];
+    }
+
+    /**
+     * Turns `{"$truth": {...}}` and the other builder markers into builder
+     * calls, `{"$ref": "b.id"}` into a saved value and `{"$text": ...}` into
+     * a long string.
+     *
+     * @param array<string, mixed> $ctx
+     */
+    private static function decode(mixed $value, array $ctx = []): mixed
     {
         if ($value instanceof \stdClass) {
             $vars = get_object_vars($value);
@@ -489,35 +926,83 @@ final class Suite
                 $key = (string) array_key_first($vars);
                 $a = $vars[$key];
                 switch ($key) {
+                    case '$ref':
+                        return self::ref((string) $a, $ctx);
+                    case '$text':
+                        return str_repeat((string) $a->repeat, (int) $a->times);
                     case '$truth':
                         return truth($a->instructions ?? null, $a->true ?? null, $a->false ?? null);
                     case '$choice':
                         return choice($a->instructions ?? null, $a->options);
                     case '$score':
                         return score($a->instructions ?? null, $a->levels);
+                    case '$number':
+                        return number($a->instructions ?? null, $a->min ?? null, $a->max ?? null, $a->step ?? null);
                     case '$image':
-                        if (isset($a->path)) {
-                            return Image::fromPath($a->id, self::dir() . '/' . $a->path);
-                        }
-                        if (isset($a->url)) {
-                            return Image::fromUrl($a->id, $a->url);
-                        }
-
-                        return Image::fromData($a->id, (string) base64_decode($a->data_base64, true), $a->media_type ?? null);
+                        return self::image($a, $ctx);
                 }
             }
             $out = [];
             foreach ($vars as $k => $v) {
-                $out[$k] = self::decode($v);
+                $out[$k] = self::decode($v, $ctx);
             }
 
             return (object) $out;
         }
         if (is_array($value)) {
-            return array_map([self::class, 'decode'], $value);
+            return array_map(static fn (mixed $v): mixed => self::decode($v, $ctx), $value);
         }
 
         return $value;
+    }
+
+    /**
+     * @param array<string, mixed> $ctx
+     */
+    private static function image(\stdClass $a, array $ctx): Image
+    {
+        $id = (string) $a->id;
+        $mediaType = isset($a->media_type) ? (string) $a->media_type : null;
+        if (isset($a->url)) {
+            return Image::fromUrl($id, (string) $a->url);
+        }
+        if (isset($a->upload_id)) {
+            return Image::fromUploadId($id, (string) self::decode($a->upload_id, $ctx), $mediaType);
+        }
+        if (isset($a->path) && !isset($a->pad_to) && $mediaType === null) {
+            return Image::fromPath($id, self::dir() . '/' . $a->path);
+        }
+        $data = isset($a->path)
+            ? (string) file_get_contents(self::dir() . '/' . $a->path)
+            : (string) base64_decode((string) $a->data_base64, true);
+        if (isset($a->pad_to)) {
+            // The image's own bytes followed by zero bytes: the header (type,
+            // pixel size) is unchanged and the size is what the case needs.
+            $data .= str_repeat("\0", max(0, (int) $a->pad_to - strlen($data)));
+        }
+
+        return Image::fromData($id, $data, $mediaType);
+    }
+
+    /**
+     * @param array<string, mixed> $ctx
+     */
+    private static function ref(string $path, array $ctx): mixed
+    {
+        $parts = explode('.', $path);
+        $current = $ctx[array_shift($parts)] ?? null;
+        foreach ($parts as $part) {
+            if (is_array($current)) {
+                $current = $current[$part] ?? $current[(int) $part] ?? null;
+            } elseif (is_object($current)) {
+                $property = lcfirst(str_replace('_', '', ucwords($part, '_')));
+                $current = $current->{$property} ?? $current->{$part} ?? null;
+            } else {
+                throw new Fail('cannot resolve $ref ' . $path);
+            }
+        }
+
+        return $current;
     }
 
     // ------------------------------------------------------------ normalising
@@ -525,25 +1010,40 @@ final class Suite
     /**
      * @return array<string, mixed>
      */
-    public static function answer(Answer $a): array
+    public static function answer(mixed $a): array
     {
         return match (true) {
+            $a instanceof NumberAnswer => ['kind' => 'number', 'number' => $a->number, 'expected' => $a->expected, 'confidence' => $a->confidence, 'probabilities' => $a->probabilities],
             $a instanceof TruthAnswer => ['kind' => 'truth', 'truth' => $a->truth],
             $a instanceof ChoiceAnswer => ['kind' => 'choice', 'choice' => $a->choice, 'confidence' => $a->confidence, 'probabilities' => $a->probabilities],
             $a instanceof ScoreAnswer => ['kind' => 'score', 'score' => $a->score, 'confidence' => $a->confidence, 'probabilities' => $a->probabilities, 'legend' => $a->legend],
             $a instanceof UnknownAnswer => ['kind' => 'unknown', 'type' => $a->type, 'raw' => $a->raw],
-            default => throw new Fail('an answer of class ' . get_class($a)),
+            default => throw new Fail('expected an answer, got ' . self::describe($a)),
         };
+    }
+
+    /**
+     * @param array<array-key, Answer> $answers
+     *
+     * @return array<array-key, array<string, mixed>>
+     */
+    private static function answers(array $answers): array
+    {
+        $out = [];
+        foreach ($answers as $id => $answer) {
+            $out[$id] = self::answer($answer);
+        }
+
+        return $out;
     }
 
     /**
      * @return array<string, mixed>
      */
-    private static function decision(Decision $d): array
+    private static function decision(mixed $d): array
     {
-        $answers = [];
-        foreach ($d->answers as $id => $answer) {
-            $answers[$id] = self::answer($answer);
+        if (!$d instanceof Decision) {
+            throw new Fail('expected a Decision, got ' . self::describe($d));
         }
 
         return [
@@ -552,9 +1052,137 @@ final class Suite
             'latency_ms' => $d->latencyMs,
             'usage' => ['input_tokens' => $d->usage->inputTokens, 'output_tokens' => $d->usage->outputTokens],
             'safety' => self::safety($d->safety),
-            'answers' => $answers,
+            'answers' => self::answers($d->answers),
             'raw' => $d->raw,
         ];
+    }
+
+    /**
+     * Every field of the batch object, read from the Batch's typed fields.
+     *
+     * @return array<string, mixed>
+     */
+    private static function batch(mixed $b): array
+    {
+        if (!$b instanceof Batch) {
+            throw new Fail('expected a Batch, got ' . self::describe($b));
+        }
+
+        return [
+            'id' => $b->id,
+            'state' => $b->state,
+            'counters' => $b->counters,
+            'created_at' => $b->createdAt,
+            'finalized_at' => $b->finalizedAt,
+            'expires_at' => $b->expiresAt,
+            'ended_at' => $b->endedAt,
+            'results_url' => $b->resultsUrl,
+            'results_expire_at' => $b->resultsExpireAt,
+            'price_factor' => $b->priceFactor,
+            'usage' => $b->usage,
+            'error' => $b->error,
+        ] + $b->raw;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function batchPage(mixed $p): array
+    {
+        if (!$p instanceof BatchPage) {
+            throw new Fail('expected a BatchPage, got ' . self::describe($p));
+        }
+
+        return [
+            'batches' => array_map([self::class, 'batch'], $p->batches),
+            'offset' => $p->offset,
+            'limit' => $p->limit,
+            'total' => $p->total,
+            'next_offset' => $p->nextOffset,
+        ];
+    }
+
+    /**
+     * @param list<\stdClass> $expected
+     */
+    private static function checkBatchResults(array $expected, mixed $results, string $path): void
+    {
+        if (!is_array($results) || count($results) !== count($expected)) {
+            throw new Fail(sprintf('%s: expected %d results, got %s', $path, count($expected), self::describe($results)));
+        }
+        foreach ($expected as $i => $spec) {
+            $r = $results[$i];
+            $where = sprintf('%s[%d]', $path, $i);
+            if (!$r instanceof BatchResult) {
+                throw new Fail($where . ': not a BatchResult');
+            }
+            if (property_exists($spec, 'custom_id') && !Compare::same($spec->custom_id, $r->customId)) {
+                throw new Fail(sprintf('%s.custom_id: expected %s, got %s', $where, Compare::show($spec->custom_id), Compare::show($r->customId)));
+            }
+            if (property_exists($spec, 'status') && !Compare::same($spec->status, $r->status)) {
+                throw new Fail(sprintf('%s.status: expected %s, got %s', $where, Compare::show($spec->status), Compare::show($r->status)));
+            }
+            if (property_exists($spec, 'headers')) {
+                Compare::match($spec->headers, $r->headers, $where . '.headers');
+            }
+            if (property_exists($spec, 'decision') && $spec->decision !== null) {
+                if ($r->decision === null) {
+                    throw new Fail($where . ': expected a decision, got none');
+                }
+                Compare::match($spec->decision, self::decision($r->decision), $where . '.decision');
+            }
+            if (property_exists($spec, 'error')) {
+                if ($r->error === null) {
+                    throw new Fail($where . ': expected an error value, got none');
+                }
+                self::checkError($spec->error, $r->error, $where . '.error');
+            }
+            if (!empty($spec->no_decision) && $r->decision !== null) {
+                throw new Fail($where . ': expected no decision');
+            }
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function sessionValue(mixed $s): array
+    {
+        if (!$s instanceof Session) {
+            throw new Fail('expected a Session, got ' . self::describe($s));
+        }
+
+        return ['answers' => self::answers($s->answers)] + $s->raw;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function event(mixed $event): array
+    {
+        if ($event instanceof Reply) {
+            $out = ['seq' => $event->seq, 'answers' => self::answers($event->answers), 'usage' => $event->usage, 'latency_ms' => $event->latencyMs, 'safety' => $event->safety];
+            if ($event->dropped !== null) {
+                $out['dropped'] = $event->dropped;
+            }
+
+            return ['reply' => $out];
+        }
+        if ($event instanceof FrameError) {
+            $out = ['seq' => $event->seq, 'error_type' => $event->errorType, 'message' => $event->message];
+            foreach (['category' => $event->category, 'retry_after_ms' => $event->retryAfterMs, 'usage' => $event->usage, 'safety' => $event->safety] as $key => $value) {
+                if ($value !== null) {
+                    $out[$key] = $value;
+                }
+            }
+
+            return ['frame_error' => $out];
+        }
+        if ($event instanceof SessionClosed) {
+            return ['closed' => ['code' => $event->closeCode, 'reopen' => $event->reopen]];
+        }
+
+        throw new Fail('unknown session event ' . self::describe($event));
     }
 
     /**
@@ -591,14 +1219,18 @@ final class Suite
         ];
     }
 
+    private static function shortName(object $o): string
+    {
+        return substr((string) strrchr('\\' . get_class($o), '\\'), 1);
+    }
+
     private static function checkError(\stdClass $spec, \Throwable $err, string $path): void
     {
         $class = $spec->error ?? $spec->class;
-        $short = static fn (string $fqcn): string => substr((string) strrchr('\\' . $fqcn, '\\'), 1);
-        $names = array_map($short, array_merge([get_class($err)], array_values(class_parents($err) ?: [])));
+        $names = array_map(static fn (string $fqcn): string => substr((string) strrchr('\\' . $fqcn, '\\'), 1), array_merge([get_class($err)], array_values(class_parents($err) ?: [])));
         if (!empty($spec->subclass_ok)) {
             if (!in_array($class, $names, true)) {
-                throw new Fail(sprintf('%s: expected %s or a subclass, got %s', $path, $class, $names[0]));
+                throw new Fail(sprintf('%s: expected %s or a subclass, got %s (%s)', $path, $class, $names[0], $err->getMessage()));
             }
         } elseif ($names[0] !== $class) {
             throw new Fail(sprintf('%s: expected %s, got %s (%s)', $path, $class, $names[0], $err->getMessage()));
@@ -611,25 +1243,89 @@ final class Suite
 
     private static function checkOutcome(\stdClass $spec, mixed $result, string $path): void
     {
+        if ($result instanceof SessionClosed && !isset($spec->closed)) {
+            throw new Fail(sprintf('%s: the call raised SessionClosed(%d)', $path, $result->closeCode));
+        }
         if (!empty($spec->argument_error)) {
             if (!$result instanceof \InvalidArgumentException) {
-                throw new Fail(sprintf('%s: expected an InvalidArgumentException, got %s', $path, is_object($result) ? get_class($result) : gettype($result)));
+                throw new Fail(sprintf('%s: expected an InvalidArgumentException, got %s', $path, self::describe($result)));
             }
 
             return;
         }
+        if ($result instanceof \InvalidArgumentException) {
+            throw new Fail(sprintf('%s: unexpected argument error: %s', $path, $result->getMessage()));
+        }
         if (isset($spec->result)) {
             if ($result instanceof \Throwable) {
-                throw new Fail(sprintf('%s: expected a decision, got %s: %s', $path, get_class($result), $result->getMessage()));
+                throw new Fail(sprintf('%s: expected %s, got %s: %s', $path, $spec->result, get_class($result), $result->getMessage()));
             }
-            if (isset($spec->decision)) {
-                Compare::match($spec->decision, self::decision($result), $path . '.decision');
+            switch ($spec->result) {
+                case 'decision':
+                    $normal = self::decision($result);
+                    if (isset($spec->decision)) {
+                        Compare::match($spec->decision, $normal, $path . '.decision');
+                    }
+                    break;
+                case 'answer':
+                    Compare::match($spec->answer ?? new \stdClass(), self::answer($result), $path . '.answer');
+                    break;
+                case 'batch':
+                    Compare::match($spec->batch ?? new \stdClass(), self::batch($result), $path . '.batch');
+                    break;
+                case 'batch_page':
+                    Compare::match($spec->batch_page ?? new \stdClass(), self::batchPage($result), $path . '.batch_page');
+                    break;
+                case 'batch_results':
+                    self::checkBatchResults($spec->batch_results, $result, $path . '.batch_results');
+                    break;
+                case 'batch_run':
+                    if (!is_array($result) || count($result) !== 2) {
+                        throw new Fail($path . ': expected [Batch, results], got ' . self::describe($result));
+                    }
+                    Compare::match($spec->batch ?? new \stdClass(), self::batch($result[0]), $path . '.batch');
+                    if (isset($spec->batch_results)) {
+                        self::checkBatchResults($spec->batch_results, $result[1], $path . '.batch_results');
+                    }
+                    break;
+                case 'session':
+                    Compare::match($spec->session ?? new \stdClass(), self::sessionValue($result), $path . '.session');
+                    break;
+                case 'upload_ids':
+                    if (!is_array($result) || (isset($spec->count) && count($result) !== $spec->count)) {
+                        throw new Fail(sprintf('%s: expected %s upload ids, got %s', $path, json_encode($spec->count ?? null), Compare::show($result)));
+                    }
+                    foreach ($result as $id) {
+                        if (!is_string($id) || preg_match('/^upl_[0-9a-f]{32}$/', $id) !== 1) {
+                            throw new Fail(sprintf('%s: %s is not an upload id', $path, Compare::show($id)));
+                        }
+                    }
+                    if (isset($spec->distinct) && (count(array_unique($result)) === count($result)) !== $spec->distinct) {
+                        throw new Fail(sprintf('%s: upload ids %s', $path, Compare::show($result)));
+                    }
+                    break;
+                case 'supervised':
+                    if (!is_array($result) || empty($result['supervised'])) {
+                        throw new Fail($path . ': expected supervise to return');
+                    }
+                    $replies = count(array_filter($result['replies'], static fn (mixed $e): bool => $e instanceof Reply));
+                    self::inRange($spec->replies ?? new \stdClass(), (float) $replies, 'replies');
+                    if (property_exists($spec, 'closed')) {
+                        $closed = $result['closed'];
+                        $got = $closed === null ? null : ['code' => $closed->closeCode, 'reopen' => $closed->reopen];
+                        if (!Compare::same($spec->closed, $got)) {
+                            throw new Fail(sprintf('%s.closed: expected %s, got %s', $path, Compare::show($spec->closed), Compare::show($got)));
+                        }
+                    }
+                    break;
+                default:
+                    throw new Fail($path . ': unknown result kind ' . $spec->result);
             }
 
             return;
         }
         if (!$result instanceof DecisionNodeError) {
-            throw new Fail(sprintf('%s: expected %s, got %s', $path, $spec->error, is_object($result) ? get_class($result) : gettype($result)));
+            throw new Fail(sprintf('%s: expected %s, got %s', $path, $spec->error, self::describe($result)));
         }
         self::checkError($spec, $result, $path);
     }
@@ -642,6 +1338,28 @@ final class Suite
         if (isset($range->max) && $value > $range->max) {
             throw new Fail(sprintf('%s %.0f is above %s', $what, $value, $range->max));
         }
+    }
+
+    private static function matches(string $pattern, string $value): bool
+    {
+        return preg_match('~' . str_replace('~', '\~', $pattern) . '~', $value) === 1;
+    }
+
+    /**
+     * @param list<\stdClass> $log
+     */
+    private static function paths(array $log): string
+    {
+        return implode(', ', array_map(static fn (\stdClass $r): string => $r->method . ' ' . $r->path . ' ' . json_encode($r->status ?? null), $log));
+    }
+
+    private static function describe(mixed $value): string
+    {
+        if ($value instanceof \Throwable) {
+            return get_class($value) . ': ' . $value->getMessage();
+        }
+
+        return is_object($value) ? get_class($value) : gettype($value);
     }
 
     private static function session(): string
