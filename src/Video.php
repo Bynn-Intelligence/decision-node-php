@@ -10,8 +10,8 @@ namespace Bynn\DecisionNode;
  * videos).
  *
  *     Video::of('dock', [
- *         Frame::fromData(30.0, $jpeg1),
- *         Frame::fromData(30.5, $jpeg2),
+ *         VideoFrame::fromData(30.0, $jpeg1),
+ *         VideoFrame::fromData(30.5, $jpeg2),
  *     ], fps: 2)
  *
  * The API reads the frames as one video, in order and with their times. Only
@@ -21,15 +21,15 @@ namespace Bynn\DecisionNode;
  * frames' own times. Each is left out of the request when not given.
  *
  * A wire-form array or object (`['id' => ..., 'frames' => [...]]`) is
- * accepted wherever a Video is, and a frame's wire form wherever a Frame is.
+ * accepted wherever a Video is, and a frame's wire form wherever a VideoFrame is.
  */
 final class Video implements \JsonSerializable
 {
-    /** @var list<Frame|array<array-key, mixed>|object> */
+    /** @var list<VideoFrame|array<array-key, mixed>|object> */
     public readonly array $frames;
 
     /**
-     * @param iterable<Frame|array<array-key, mixed>|object> $frames in time order
+     * @param iterable<VideoFrame|array<array-key, mixed>|object> $frames in time order
      */
     public function __construct(
         public readonly string $id,
@@ -46,7 +46,7 @@ final class Video implements \JsonSerializable
     }
 
     /**
-     * @param iterable<Frame|array<array-key, mixed>|object> $frames in time order
+     * @param iterable<VideoFrame|array<array-key, mixed>|object> $frames in time order
      */
     public static function of(string $id, iterable $frames, int|float|null $fps = null, int|float|null $start = null, int|float|null $end = null): self
     {
@@ -67,7 +67,7 @@ final class Video implements \JsonSerializable
                 $wire[$name] = $value;
             }
         }
-        $wire['frames'] = array_map(static fn (mixed $frame): mixed => $frame instanceof Frame ? $frame->toArray() : $frame, $this->frames);
+        $wire['frames'] = array_map(static fn (mixed $frame): mixed => $frame instanceof VideoFrame ? $frame->toArray() : $frame, $this->frames);
 
         return $wire;
     }

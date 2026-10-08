@@ -7,7 +7,8 @@ namespace Bynn\DecisionNode;
 
 /**
  * A question in its wire form. Build one with {@see truth()}, {@see choice()},
- * {@see score()} or {@see number()} (or the static methods of the same names).
+ * {@see score()}, {@see number()}, {@see point()} or {@see box()} (or the
+ * static methods of the same names).
  *
  * A plain array in the wire form (`['type' => 'truth', 'instructions' => ...]`)
  * is accepted wherever a Question is, so a request copied from the API
@@ -17,13 +18,14 @@ final class Question implements \JsonSerializable
 {
     /**
      * @param \stdClass|list<mixed>|null $criteria
-     * @param array<string, int|float>   $grid     a number question's min, max and step, as given
+     * @param array<string, mixed>       $fields   the type's own fields, as given: a number question's
+     *                                             min, max and step, a point or box question's image and units
      */
     private function __construct(
         public readonly string $type,
         public readonly mixed $instructions,
         private readonly \stdClass|array|null $criteria,
-        private readonly array $grid = [],
+        private readonly array $fields = [],
     ) {
     }
 
@@ -114,6 +116,47 @@ final class Question implements \JsonSerializable
     }
 
     /**
+     * One spot in an image, answered with its `x` and `y`, the probability
+     * that the thing is there at all (`present`) and the probability that the
+     * spot is on it (`confidence`).
+     *
+     * `$image` is the id of the image to look in, needed when the request has
+     * two or more images; `$units` is `pixels` (the default) or `normalized`
+     * (fractions of the width and height). Each is left out of the request
+     * when not given.
+     */
+    public static function point(mixed $instructions, ?string $image = null, ?string $units = null): self
+    {
+        return new self('point', $instructions, null, self::place($image, $units));
+    }
+
+    /**
+     * A box around something in an image, answered with its top-left
+     * (`x1`, `y1`) and bottom-right (`x2`, `y2`) corners, `present` and
+     * `confidence`. `$image` and `$units` as for {@see point()}.
+     */
+    public static function box(mixed $instructions, ?string $image = null, ?string $units = null): self
+    {
+        return new self('box', $instructions, null, self::place($image, $units));
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private static function place(?string $image, ?string $units): array
+    {
+        $fields = [];
+        if ($image !== null) {
+            $fields['image'] = $image;
+        }
+        if ($units !== null) {
+            $fields['units'] = $units;
+        }
+
+        return $fields;
+    }
+
+    /**
      * The question in its wire form, ready for `json_encode`.
      *
      * @return array<string, mixed>
@@ -127,7 +170,7 @@ final class Question implements \JsonSerializable
         if ($this->criteria !== null) {
             $wire['criteria'] = $this->criteria instanceof \stdClass ? clone $this->criteria : $this->criteria;
         }
-        foreach ($this->grid as $name => $value) {
+        foreach ($this->fields as $name => $value) {
             $wire[$name] = $value;
         }
 

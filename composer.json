@@ -1,6 +1,6 @@
 {
     "name": "bynn/decisionnode",
-    "description": "PHP client for the DecisionNode API: ask yes-or-no, choice, score and number questions about any input and get calibrated probabilities back, one by one, in live sessions or in batches.",
+    "description": "PHP client for the DecisionNode API: ask yes-or-no, choice, score, number, point and box questions about text, images and video and get calibrated probabilities back, one by one, in live sessions or in batches.",
     "type": "library",
     "license": "MIT",
     "keywords": ["decisionnode", "decision", "classification", "scoring", "sessions", "batch", "api", "sdk"],

@@ -7,9 +7,9 @@ namespace Bynn\DecisionNode\Tests\Unit;
 use Bynn\DecisionNode\BatchRequest;
 use Bynn\DecisionNode\Decision;
 use Bynn\DecisionNode\Exception\BadRequestError;
-use Bynn\DecisionNode\Frame;
 use Bynn\DecisionNode\Image;
 use Bynn\DecisionNode\Video;
+use Bynn\DecisionNode\VideoFrame;
 use PHPUnit\Framework\Attributes\DataProvider;
 
 use function Bynn\DecisionNode\truth;
@@ -28,7 +28,7 @@ final class VideoTest extends TestCase
         $jpeg = self::jpeg();
         $dn = $this->client([self::truthBody()]);
         $dn->decide('Dock camera 4.', ['q' => truth('Does a person fall?')], videos: [
-            Video::of('dock', [Frame::fromData(30.0, $jpeg), Frame::fromBase64(30.5, 'QUJD', 'image/png')], fps: 2, end: 31),
+            Video::of('dock', [VideoFrame::fromData(30.0, $jpeg), VideoFrame::fromBase64(30.5, 'QUJD', 'image/png')], fps: 2, end: 31),
             ['id' => 'gate', 'frames' => [['t' => 0, 'media_type' => 'image/webp', 'data' => 'UklG']]],
         ]);
 
@@ -57,7 +57,7 @@ final class VideoTest extends TestCase
     {
         // An inline threshold of 0 uploads every local image; frames still go inline.
         $dn = $this->client([self::truthBody()], ['inlineThreshold' => 0]);
-        $dn->decide('s', ['q' => truth('?')], videos: [Video::of('v', [Frame::fromData(0, self::jpeg())])]);
+        $dn->decide('s', ['q' => truth('?')], videos: [Video::of('v', [VideoFrame::fromData(0, self::jpeg())])]);
 
         self::assertCount(1, $this->history);
         self::assertSame('/v1/decide', $this->sent()->getUri()->getPath());
@@ -142,13 +142,13 @@ final class VideoTest extends TestCase
     {
         $dn = $this->client([]);
         $this->expectExceptionMessage(sprintf("Video 'dock': frame 1: t must be larger than the frame before it (%s).", $written));
-        $dn->decide('s', ['q' => truth('?')], videos: [Video::of('dock', [Frame::fromData($t, self::jpeg()), Frame::fromData($t, self::jpeg())])]);
+        $dn->decide('s', ['q' => truth('?')], videos: [Video::of('dock', [VideoFrame::fromData($t, self::jpeg()), VideoFrame::fromData($t, self::jpeg())])]);
     }
 
     public function testTypedFramesAreCheckedToo(): void
     {
         $dn = $this->client([]);
-        $video = Video::of('dock', [Frame::fromData(0, 'GIF89a not a frame')]);
+        $video = Video::of('dock', [VideoFrame::fromData(0, 'GIF89a not a frame')]);
         $this->expectExceptionMessage("Video 'dock': frame 0: media_type must be one of image/jpeg, image/png, image/webp.");
         $dn->decide('s', ['q' => truth('?')], videos: [$video]);
     }
@@ -156,9 +156,9 @@ final class VideoTest extends TestCase
     public function testFrameBytesAndCountsAreLeftToTheServer(): void
     {
         // A frame whose bytes are not its media type, and 65 frames: sent as they are.
-        $frames = [Frame::fromBase64(0, 'bm90IGFuIGltYWdl', 'image/jpeg')];
+        $frames = [VideoFrame::fromBase64(0, 'bm90IGFuIGltYWdl', 'image/jpeg')];
         for ($i = 1; $i < 65; ++$i) {
-            $frames[] = Frame::fromData($i / 2, self::jpeg());
+            $frames[] = VideoFrame::fromData($i / 2, self::jpeg());
         }
         $dn = $this->client([self::truthBody()]);
         $dn->decide('s', ['q' => truth('?')], videos: [Video::of('dock', $frames)]);
@@ -169,19 +169,19 @@ final class VideoTest extends TestCase
     public function testFrameNeedsExactlyOneSource(): void
     {
         $this->expectException(\InvalidArgumentException::class);
-        new Frame(0);
+        new VideoFrame(0);
     }
 
     public function testBase64FrameWithNoMediaTypeIsRefusedBeforeSending(): void
     {
         $dn = $this->client([]);
         $this->expectExceptionMessage("Video 'dock': frame 0: media_type must be one of image/jpeg, image/png, image/webp.");
-        $dn->decide('s', ['q' => truth('?')], videos: [Video::of('dock', [new Frame(0, base64: 'QUJD')])]);
+        $dn->decide('s', ['q' => truth('?')], videos: [Video::of('dock', [new VideoFrame(0, base64: 'QUJD')])]);
     }
 
     public function testFrameFromPath(): void
     {
-        $frame = Frame::fromPath(1.5, self::DIR . '5x4.jpg');
+        $frame = VideoFrame::fromPath(1.5, self::DIR . '5x4.jpg');
         self::assertSame('image/jpeg', $frame->mediaType);
         self::assertSame(['t' => 1.5, 'media_type' => 'image/jpeg', 'data' => base64_encode(self::jpeg())], $frame->toArray());
     }
@@ -234,7 +234,7 @@ final class VideoTest extends TestCase
             'usage' => ['input_tokens' => 1300, 'output_tokens' => 0, 'video_frames' => 20, 'video_seconds' => 10.25],
             'warnings' => ["Video 'dock' was read at 1 frame a second."],
         ])]);
-        $d = $dn->decide('s', ['q' => truth('?')], videos: [Video::of('dock', [Frame::fromData(0, self::jpeg())])]);
+        $d = $dn->decide('s', ['q' => truth('?')], videos: [Video::of('dock', [VideoFrame::fromData(0, self::jpeg())])]);
 
         self::assertSame(20, $d->usage->videoFrames);
         self::assertSame(10.25, $d->usage->videoSeconds);
@@ -252,7 +252,7 @@ final class VideoTest extends TestCase
 
     public function testHelpersAndSystemoneTakeVideos(): void
     {
-        $video = Video::of('dock', [Frame::fromData(0, self::jpeg())]);
+        $video = Video::of('dock', [VideoFrame::fromData(0, self::jpeg())]);
         $dn = $this->client([self::truthBody(id: 'check'), self::json(200, ['answers' => ['q' => ['type' => 'noul', 'noul' => 0.2]]])]);
         $dn->check('s', 'Does a person fall?', videos: [$video]);
         $dn->systemone('s', ['q' => truth('?')], videos: [$video]);
@@ -265,7 +265,7 @@ final class VideoTest extends TestCase
     public function testBatchLineCarriesVideos(): void
     {
         $dn = $this->client([self::json(200, ['id' => 'batch_1', 'status' => 'draft'])]);
-        $dn->batches->create([new BatchRequest('r1', ['q' => truth('?')], 's', videos: [Video::of('dock', [Frame::fromBase64(0, 'QUJD', 'image/jpeg')])])]);
+        $dn->batches->create([new BatchRequest('r1', ['q' => truth('?')], 's', videos: [Video::of('dock', [VideoFrame::fromBase64(0, 'QUJD', 'image/jpeg')])])]);
 
         $line = json_decode(trim((string) $this->sent()->getBody()), true, 512, JSON_THROW_ON_ERROR);
         self::assertSame(['custom_id', 'model', 'state', 'questions', 'videos'], array_keys($line));
@@ -282,9 +282,9 @@ final class VideoTest extends TestCase
     public function testCheckRequestTakesVideos(): void
     {
         $dn = $this->client([]);
-        $dn->checkRequest('decide', ['questions' => ['q' => truth('?')], 'videos' => [Video::of('dock', [Frame::fromData(0, self::jpeg())])]]);
+        $dn->checkRequest('decide', ['questions' => ['q' => truth('?')], 'videos' => [Video::of('dock', [VideoFrame::fromData(0, self::jpeg())])]]);
         try {
-            $dn->checkRequest('decide', ['questions' => ['q' => truth('?')], 'videos' => [Video::of('dock', [Frame::fromData(2, self::jpeg()), Frame::fromData(1, self::jpeg())])]]);
+            $dn->checkRequest('decide', ['questions' => ['q' => truth('?')], 'videos' => [Video::of('dock', [VideoFrame::fromData(2, self::jpeg()), VideoFrame::fromData(1, self::jpeg())])]]);
             self::fail('no error');
         } catch (BadRequestError $e) {
             self::assertSame("Video 'dock': frame 1: t must be larger than the frame before it (2).", $e->getMessage());
@@ -296,10 +296,10 @@ final class VideoTest extends TestCase
     {
         $dn = $this->client([]);
         $this->expectExceptionMessage('Too many videos: 5, the limit is 4.');
-        $ok = Video::of('v', [Frame::fromData(0, self::jpeg())]);
+        $ok = Video::of('v', [VideoFrame::fromData(0, self::jpeg())]);
         $dn->decideMany([
             ['questions' => ['q' => truth('?')], 'videos' => [$ok]],
-            ['questions' => ['q' => truth('?')], 'videos' => array_map(static fn (int $i): Video => Video::of('v' . $i, [Frame::fromData(0, self::jpeg())]), range(1, 5))],
+            ['questions' => ['q' => truth('?')], 'videos' => array_map(static fn (int $i): Video => Video::of('v' . $i, [VideoFrame::fromData(0, self::jpeg())]), range(1, 5))],
         ]);
     }
 }

@@ -9,16 +9,16 @@ use Bynn\DecisionNode\Internal\ImageHeader;
 /**
  * One frame of a {@see Video}: a still image and its time in seconds.
  *
- *     Frame::fromData(0.0, $jpegBytes)                    // the type is read from the first bytes
- *     Frame::fromBase64(0.5, $base64, 'image/jpeg')
- *     Frame::fromPath(1.0, '/frames/dock-0001.jpg')
+ *     VideoFrame::fromData(0.0, $jpegBytes)               // the type is read from the first bytes
+ *     VideoFrame::fromBase64(0.5, $base64, 'image/jpeg')
+ *     VideoFrame::fromPath(1.0, '/frames/dock-0001.jpg')
  *
  * A frame is a JPEG, PNG or WebP image the caller already holds, such as a
  * camera's snapshot. It is always sent inline as base64, never uploaded and
  * never resized or re-encoded. `t` is the frame's time in seconds, at least 0
  * and larger than the time of the frame before it in the same video.
  */
-final class Frame implements \JsonSerializable
+final class VideoFrame implements \JsonSerializable
 {
     /** Seconds, as given. */
     public readonly int|float $t;
@@ -46,7 +46,7 @@ final class Frame implements \JsonSerializable
     public function __construct(int|float $t, ?string $data = null, ?string $mediaType = null, ?string $base64 = null)
     {
         if (($data === null) === ($base64 === null)) {
-            throw new \InvalidArgumentException('Frame: give exactly one of data and base64.');
+            throw new \InvalidArgumentException('VideoFrame: give exactly one of data and base64.');
         }
         $mediaType = $mediaType === '' ? null : $mediaType;
         $this->t = $t;
@@ -80,7 +80,7 @@ final class Frame implements \JsonSerializable
     {
         $data = is_file($path) && is_readable($path) ? @file_get_contents($path) : false;
         if ($data === false) {
-            throw new \InvalidArgumentException(sprintf('Frame at %s s: cannot read %s.', Internal\Json::encode($t), $path));
+            throw new \InvalidArgumentException(sprintf('Video frame at %s s: cannot read %s.', Internal\Json::encode($t), $path));
         }
 
         return new self($t, data: $data, mediaType: $mediaType);

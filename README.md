@@ -1,6 +1,6 @@
 # DecisionNode PHP SDK
 
-The PHP client for the [DecisionNode](https://decisionnode.com) API: ask yes-or-no, choice, score and number questions about any text, JSON or image, and get probabilities back. One-off decisions, live sessions that answer a stream of frames, and batches at half the price.
+The PHP client for the [DecisionNode](https://decisionnode.com) API: ask yes-or-no, choice, score and number questions about any text, JSON, image or video, point to a spot or draw a box in an image, and get probabilities back. One-off decisions, live sessions that answer a stream of frames, and batches at half the price.
 
 Implements version 1.2 of the DecisionNode SDK specification, which the package states as `DecisionNode::SPEC_VERSION` (also `Bynn\DecisionNode\SPEC_VERSION`). Requires PHP 8.2 or later.
 
@@ -49,6 +49,8 @@ Every number is the value the API sent: nothing is rounded, renormalised or thre
 | `choice($instructions, $options)` | `ChoiceAnswer` | `choice`, `confidence`, `probabilities` keyed by option name |
 | `score($instructions, $levels)` | `ScoreAnswer` | `score` (the expected level index), `confidence`, `probabilities` and `legend` keyed by level index |
 | `number($instructions, $min, $max, $step)` | `NumberAnswer` | `number` (the most likely value), `expected`, `confidence` (the probability of `number`), `probabilities` keyed by the value as the API wrote it (`"7"`, `"3.5"`) |
+| `point($instructions, $image, $units)` | `PointAnswer` | `x`, `y`, `present`, `confidence`, `image`, `width`, `height` (see [Points and boxes](#points-and-boxes)) |
+| `box($instructions, $image, $units)` | `BoxAnswer` | `x1`, `y1`, `x2`, `y2`, `present`, `confidence`, `image`, `width`, `height` |
 
 - `truth`: `$ifTrue` and `$ifFalse` describe what counts as true and false. Both are optional.
 - `choice`: `$options` is a map of option name to description, or a list of names. Names are sent byte for byte, in the order given.
@@ -73,6 +75,40 @@ $dn->decide('Paid 740 SEK at Nordic Rail.', [
     'currency' => ['type' => 'choice', 'instructions' => 'Which currency?', 'criteria' => ['SEK' => null, 'EUR' => null]],
 ]);
 ```
+
+### Points and boxes
+
+A `point` question finds one spot in an image and a `box` question a rectangle around something, for a robot to pick, a camera to frame or a reviewer to check.
+
+```php
+use Bynn\DecisionNode\Image;
+use function Bynn\DecisionNode\{box, point, truth};
+
+$d = $dn->decide(
+    images: [Image::fromUrl('belt', 'https://files.example.com/line-3/cam-2/0917.jpg')],
+    questions: [
+        'pick' => point('Point to the yellow package closest to the robot arm.'),
+        'damage' => box('Draw a box around the damaged package.', image: 'belt'),
+        'any_damage' => truth('Is any package on the belt damaged?'),
+    ],
+);
+
+$d['pick']->x;              // 812
+$d['pick']->y;              // 455
+$d['pick']->present;        // 0.97
+$d['damage']->x1;           // 300 (and y1, x2, y2)
+$d['damage']->confidence;   // 0.88
+$d['any_damage']->truth;    // 0.93
+```
+
+- `$image` is the id of the image to look in. With one image in the request it can be left out; with two or more it is required.
+- `$units` is `pixels` (the default: pixels of the image as sent, after its EXIF orientation) or `normalized` (fractions of the width and height, from 0 to 1).
+- `x` and `y`, and the corners `x1`, `y1` (top left) and `x2`, `y2` (bottom right), count from the top-left corner of the image, `x` to the right and `y` down.
+- `present` is the probability that what the instructions describe is in the image at all. Under a low `present` the place is only the best guess for something that is probably not there.
+- `confidence` is the probability that the place is right if the thing is there: for a point, that it lies on the thing; for a box, that it overlaps the true box by an intersection over union of 0.5 or more.
+- `image`, `width` and `height` name the image looked in and its size in pixels, so the answer can be drawn or converted without another lookup.
+
+Every field is always there and every number is the one the API sent. Point and box questions work in `decide`, `decideMany` and batch requests, beside any other question type; `systemone` takes neither. A request with one needs at least one image.
 
 Answers are read by question id, `$d['route']` or `$d->answers['route']`. An answer of a question type this SDK version does not know yet comes back as an `UnknownAnswer` with its `type` and `raw` fields. In `decide`, so does an answer of a known type whose fields are missing or of the wrong type (a choice without `probabilities`, a truth whose value is a string): the rest of the decision is read as usual. The one-question helpers `check`, `classify`, `score` and `number` promise a typed answer, so for them a missing or malformed answer is a `ServerError` (see below). Every answer class extends `Answer`.
 
@@ -172,18 +208,18 @@ How many large images fit in one request is the model's token limit, which the s
 
 ## Videos
 
-Video is available when the API enables it. A video is sent as frames: still images you already hold, such as a camera's JPEG snapshots, each with its time in seconds. Only the frames go to the API: no video file, no video URL and no sound.
+A video is sent as frames: still images you already hold, such as a camera's JPEG snapshots, each with its time in seconds. Only the frames go to the API: no video file, no video URL and no sound.
 
 ```php
-use Bynn\DecisionNode\{Frame, Video};
+use Bynn\DecisionNode\{Video, VideoFrame};
 
 $d = $dn->decide(
     state: 'Warehouse camera 4, loading dock, shift B.',
     videos: [
         Video::of('dock', [
-            Frame::fromPath(30.0, '/frames/dock-0001.jpg'),
-            Frame::fromPath(30.5, '/frames/dock-0002.jpg'),
-            Frame::fromData(31.0, $jpegBytes),
+            VideoFrame::fromPath(30.0, '/frames/dock-0001.jpg'),
+            VideoFrame::fromPath(30.5, '/frames/dock-0002.jpg'),
+            VideoFrame::fromData(31.0, $jpegBytes),
         ]),
     ],
     questions: ['fall' => truth('Does a person fall in the video?')],
@@ -198,9 +234,9 @@ $d->warnings;              // for example, a video read at a lower rate than ask
 The API reads the frames of a video as one sequence, in order and with their times, and every question sees every video, every image and the state.
 
 ```php
-Frame::fromData(0.5, $bytes);                    // JPEG, PNG or WebP; the media type is read from the bytes
-Frame::fromBase64(0.5, $base64, 'image/jpeg');   // base64 text, sent as given, with its media type
-Frame::fromPath(0.5, '/frames/0002.jpg');        // read when the Frame is made
+VideoFrame::fromData(0.5, $bytes);                   // JPEG, PNG or WebP; the media type is read from the bytes
+VideoFrame::fromBase64(0.5, $base64, 'image/jpeg');  // base64 text, sent as given, with its media type
+VideoFrame::fromPath(0.5, '/frames/0002.jpg');       // read when the VideoFrame is made
 
 Video::of('dock', $frames, fps: 4, start: 30, end: 60);
 ```
@@ -337,9 +373,10 @@ The SDK checks every fixed rule the API documents before sending, so the server 
 
 | Fault | Raised as |
 |---|---|
-| A choice with no options or more than 255, a score with more than 10 levels, a truth question with neither instructions nor criteria, a number question without instructions | `BadRequestError` with the API's message and no `errorType` |
-| An unknown question type (on `systemone`, a number question too), objects and arrays nested more than 128 deep, an image fault (not JPEG, PNG or WebP, over 10 MB or 40 megapixels, more than 16 images, an empty or repeated id, an image URL that is not `https`), a video fault (see [Videos](#videos)), an upload id given with another media type, a batch request without a valid or with a repeated `custom_id`, an empty `add`, `list` paging out of range | `BadRequestError`, `errorType` `api_usage_error` |
+| A choice with no options or more than 255, a score with more than 10 levels, a truth question with neither instructions nor criteria, a number, point or box question without instructions | `BadRequestError` with the API's message and no `errorType` |
+| An unknown question type (on `systemone`, a number, point or box question too), objects and arrays nested more than 128 deep, an image fault (not JPEG, PNG or WebP, over 10 MB or 40 megapixels, more than 16 images, an empty or repeated id, an image URL that is not `https`), a video fault (see [Videos](#videos)), an upload id given with another media type, a batch request without a valid or with a repeated `custom_id`, an empty `add`, `list` paging out of range | `BadRequestError`, `errorType` `api_usage_error` |
 | An image URL over 2,048 characters, with user information, on a port other than 443, or on a literal private, loopback or reserved address | `BadRequestError`, `errorType` `image_url_refused` |
+| A point or box question in a request without images, without `image` when the request has two or more, or with an `image` that is not one of the request's image ids, or `units` other than `pixels` and `normalized` | `ValidationError` with every such entry of the request in one list |
 | A question or state of the wrong shape or type, a score with no levels, a number grid fault (`min`, `max` or `step` not a number, beyond 2^53, more than 6 decimals, `step` not above 0, `min` above `max`, more than 4,096 values), a session `window` outside 1 to 64 or `ttl_seconds` outside 1 to 3,600 | `ValidationError` with the `entries` the API would list |
 
 A frame that breaks a rule (no frame and no image, an empty frame, an unknown or empty question list, a `seq` out of range, an image fault, an image by URL) makes `Session::send()` throw `BadRequestError` (`api_usage_error`): nothing goes on the socket and the frame takes no `seq`. Once `models()` has been called, the limits it lists (a model that answers no number questions or serves no sessions, `max_window`, `requests_per_batch`, `max_custom_id_chars`) are checked too; until then they are left to the server. A model is found in the held list by its name, or by the entry that names it as its alias or pinned version; a model the list does not name is left to the server. Token limits stay the server's, since they differ by model. `decideRaw` sends its body unchecked.
@@ -438,7 +475,7 @@ composer test          # unit tests
 composer analyse       # static analysis
 ```
 
-The conformance tests run the language-neutral DecisionNode conformance cases (suite 1.7) against their mock server, every case once through the blocking methods and once through their `Async` forms (sessions are blocking in both runs): set `DECISIONNODE_CONFORMANCE_DIR` to the suite's directory and run `composer conformance`. Without that variable the conformance tests fail; they never skip. CI checks the suite out at a pinned commit, set once as `CONFORMANCE_REF` in `.github/workflows/ci.yml`, and every action in the workflow is pinned to a commit SHA.
+The conformance tests run the language-neutral DecisionNode conformance cases (suite 1.8) against their mock server, every case once through the blocking methods and once through their `Async` forms (sessions are blocking in both runs): set `DECISIONNODE_CONFORMANCE_DIR` to the suite's directory and run `composer conformance`. Without that variable the conformance tests fail; they never skip. CI checks the suite out at a pinned commit, set once as `CONFORMANCE_REF` in `.github/workflows/ci.yml`, and every action in the workflow is pinned to a commit SHA.
 
 ## License
 

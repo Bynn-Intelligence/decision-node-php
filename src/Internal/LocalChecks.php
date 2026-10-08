@@ -6,9 +6,9 @@ namespace Bynn\DecisionNode\Internal;
 
 use Bynn\DecisionNode\Exception\BadRequestError;
 use Bynn\DecisionNode\Exception\ValidationError;
-use Bynn\DecisionNode\Frame;
 use Bynn\DecisionNode\Image;
 use Bynn\DecisionNode\Video;
+use Bynn\DecisionNode\VideoFrame;
 
 /**
  * Every fixed rule the API documents, checked before anything is sent, so the
@@ -43,7 +43,8 @@ final class LocalChecks
 
     private const TWO_53 = 9_007_199_254_740_992;
     private const MAX_NUMBER_DECIMALS = 6;
-    private const DECIDE_TYPES = ['truth', 'noul', 'choice', 'score', 'number'];
+    private const DECIDE_TYPES = ['truth', 'noul', 'choice', 'score', 'number', 'point', 'box'];
+    private const UNITS = ['pixels', 'normalized'];
     private const SYSTEMONE_TYPES = ['noul', 'choice', 'score'];
     private const MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 
@@ -83,7 +84,7 @@ final class LocalChecks
         if ($state !== null && !self::sdl($state)) {
             array_push($entries, ...self::sdlEntries(['body', 'state'], self::json($state)));
         }
-        self::questions($questions, $profile, $limits, $entries);
+        self::questions($questions, $profile, $limits, $entries, self::imageIds($images));
         $ids = self::images($images, $limits);
         self::videos($videos, $ids);
     }
@@ -235,7 +236,8 @@ final class LocalChecks
      */
     public static function images(array $images, array $limits = []): array
     {
-        $most = self::positive($limits['max_images'] ?? null) ?? self::MAX_IMAGES;
+        // A held models entry states the limit at its top level, or under `images`.
+        $most = self::positive($limits['max_images'] ?? null) ?? self::positive(self::field($limits['images'] ?? null, 'max_images')) ?? self::MAX_IMAGES;
         if (count($images) > $most) {
             throw self::bad(sprintf('Too many images: %d, the limit is %d.', count($images), $most));
         }
@@ -301,7 +303,7 @@ final class LocalChecks
             }
             $before = null;
             foreach ($frames as $n => $frame) {
-                if ($frame instanceof Frame) {
+                if ($frame instanceof VideoFrame) {
                     [$t, $data, $mediaType] = [$frame->t, $frame->base64 ?? $frame->data, $frame->mediaType];
                 } elseif (is_array($frame) || is_object($frame)) {
                     [$t, $data, $mediaType] = [self::field($frame, 't'), self::field($frame, 'data'), self::field($frame, 'media_type')];
@@ -483,17 +485,39 @@ final class LocalChecks
     // ---------------------------------------------------------------- questions
 
     /**
+     * The ids of a request's images as given, whatever their form.
+     *
+     * @param list<mixed> $images
+     *
+     * @return list<string>
+     */
+    private static function imageIds(array $images): array
+    {
+        $ids = [];
+        foreach ($images as $image) {
+            $id = $image instanceof Image ? $image->id : self::field($image, 'id');
+            if (is_string($id)) {
+                $ids[] = $id;
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
      * @param array<array-key, mixed>    $questions
      * @param array<string, mixed>       $limits
      * @param list<array<string, mixed>> $entries   422 entries found before the questions
+     * @param list<string>|null          $imageIds  the request's image ids; null where a request carries no images
+     *                                              of its own (a session's open), so a point or box is not held to them
      *
      * @throws BadRequestError|ValidationError
      */
-    private static function questions(array $questions, string $profile, array $limits, array $entries): void
+    private static function questions(array $questions, string $profile, array $limits, array $entries, ?array $imageIds = null): void
     {
         $deferred = null;
         foreach ($questions as $id => $question) {
-            $found = self::question((string) $id, self::json($question), $profile, $limits, $entries);
+            $found = self::question((string) $id, self::json($question), $profile, $limits, $entries, $imageIds);
             $deferred ??= $found;
         }
         if ($entries !== []) {
@@ -509,8 +533,9 @@ final class LocalChecks
      *
      * @param array<string, mixed>       $limits
      * @param list<array<string, mixed>> $entries
+     * @param list<string>|null          $imageIds
      */
-    private static function question(string $id, mixed $q, string $profile, array $limits, array &$entries): ?BadRequestError
+    private static function question(string $id, mixed $q, string $profile, array $limits, array &$entries, ?array $imageIds): ?BadRequestError
     {
         $base = ['body', 'questions', $id];
         if (!$q instanceof \stdClass) {
@@ -547,6 +572,9 @@ final class LocalChecks
         if ($type === 'score') {
             return self::score($q, $criteria, $loc, $entries, $profile, self::positive($limits['max_score_levels'] ?? null) ?? self::MAX_SCORE_LEVELS);
         }
+        if ($type === 'point' || $type === 'box') {
+            return self::place($id, $type, $q, $loc, $entries, $imageIds);
+        }
 
         // truth, and the wire name /v1/systemone takes for it
         if ($criteria !== null && !$criteria instanceof \stdClass) {
@@ -562,6 +590,42 @@ final class LocalChecks
         }
         if ($instructions === null && ($sides['true'] ?? null) === null && ($sides['false'] ?? null) === null) {
             return self::plain(sprintf('%s question must have criteria or instructions: %s', $type === 'noul' ? 'Noul' : 'Truth', $id));
+        }
+
+        return null;
+    }
+
+    /**
+     * A point or box question: an image to look in, named by `image` when
+     * the request has two or more, and `units` of `pixels` or `normalized`;
+     * then its instructions, whose absence is a plain-string 400.
+     *
+     * @param list<string|int>           $loc
+     * @param list<array<string, mixed>> $entries
+     * @param list<string>|null          $imageIds
+     */
+    private static function place(string $id, string $type, \stdClass $q, array $loc, array &$entries, ?array $imageIds): ?BadRequestError
+    {
+        $image = $q->image ?? null;
+        if ($imageIds !== null) {
+            if ($imageIds === []) {
+                $entries[] = self::entry('image_required', $loc, sprintf('A %s question needs an image in the request', $type), $q);
+            } elseif ($image === null) {
+                if (count($imageIds) >= 2) {
+                    $entries[] = self::entry('missing', [...$loc, 'image'], 'Field required', $q);
+                }
+            } elseif (!is_string($image)) {
+                $entries[] = self::entry('string_type', [...$loc, 'image'], 'Input should be a valid string', $image);
+            } elseif (!in_array($image, $imageIds, true)) {
+                $entries[] = self::entry('unknown_image', [...$loc, 'image'], 'Input should be the id of an image of the request', $image);
+            }
+        }
+        $units = $q->units ?? null;
+        if ($units !== null && !in_array($units, self::UNITS, true)) {
+            $entries[] = self::entry('literal_error', [...$loc, 'units'], "Input should be 'pixels' or 'normalized'", $units, ['expected' => "'pixels' or 'normalized'"]);
+        }
+        if (($q->instructions ?? null) === null) {
+            return self::plain(sprintf('%s question must have instructions: %s', ucfirst($type), $id));
         }
 
         return null;

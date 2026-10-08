@@ -61,7 +61,7 @@ final class Prepare
     }
 
     /**
-     * The videos as a list. Video and Frame objects are written in their wire
+     * The videos as a list. Video and VideoFrame objects are written in their wire
      * forms when the body is encoded; frames always go inline.
      *
      * @param iterable<mixed>|null $videos

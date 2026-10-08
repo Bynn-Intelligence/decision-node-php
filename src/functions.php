@@ -48,6 +48,26 @@ if (!function_exists(__NAMESPACE__ . '\number')) {
     }
 }
 
+if (!function_exists(__NAMESPACE__ . '\point')) {
+    /**
+     * One spot in an image. See {@see Question::point()}.
+     */
+    function point(mixed $instructions, ?string $image = null, ?string $units = null): Question
+    {
+        return Question::point($instructions, $image, $units);
+    }
+}
+
+if (!function_exists(__NAMESPACE__ . '\box')) {
+    /**
+     * A box around something in an image. See {@see Question::box()}.
+     */
+    function box(mixed $instructions, ?string $image = null, ?string $units = null): Question
+    {
+        return Question::box($instructions, $image, $units);
+    }
+}
+
 if (!defined(__NAMESPACE__ . '\\SPEC_VERSION')) {
     /** The version of the DecisionNode SDK specification this package implements. */
     define(__NAMESPACE__ . '\\SPEC_VERSION', DecisionNode::SPEC_VERSION);

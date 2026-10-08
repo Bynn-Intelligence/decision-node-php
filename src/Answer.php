@@ -8,7 +8,8 @@ namespace Bynn\DecisionNode;
  * One answer of a decision.
  *
  * Known question types come back as {@see TruthAnswer}, {@see ChoiceAnswer},
- * {@see ScoreAnswer} or {@see NumberAnswer}. An answer of a type this version of the SDK does not
+ * {@see ScoreAnswer}, {@see NumberAnswer}, {@see PointAnswer} or
+ * {@see BoxAnswer}. An answer of a type this version of the SDK does not
  * know comes back as an {@see UnknownAnswer}, holding its type and raw fields,
  * so a new question type on the server does not break an older client.
  */
@@ -42,6 +43,8 @@ abstract class Answer
             $type === 'number' && NumberAnswer::wellFormed($raw) && self::objects($shape, 'probabilities') => new NumberAnswer($raw),
             $type === 'choice' && ChoiceAnswer::wellFormed($raw) && self::objects($shape, 'probabilities') => new ChoiceAnswer($raw),
             $type === 'score' && ScoreAnswer::wellFormed($raw) && self::objects($shape, 'probabilities', 'legend') => new ScoreAnswer($raw),
+            $type === 'point' && PointAnswer::wellFormed($raw) => new PointAnswer($raw),
+            $type === 'box' && BoxAnswer::wellFormed($raw) => new BoxAnswer($raw),
             default => new UnknownAnswer($type, $raw),
         };
     }
@@ -70,6 +73,38 @@ abstract class Answer
     protected static function isNumber(mixed $value): bool
     {
         return is_int($value) || is_float($value);
+    }
+
+    /**
+     * Whether every named field of `$raw` is a JSON number.
+     *
+     * @internal
+     *
+     * @param array<array-key, mixed> $raw
+     */
+    protected static function numbers(array $raw, string ...$fields): bool
+    {
+        foreach ($fields as $field) {
+            if (!self::isNumber($raw[$field] ?? null)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * A field known to be a number.
+     *
+     * @internal
+     *
+     * @param array<array-key, mixed> $raw
+     */
+    protected static function required(array $raw, string $field): int|float
+    {
+        $value = $raw[$field] ?? null;
+
+        return self::isNumber($value) ? $value : 0;
     }
 
     /**

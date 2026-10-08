@@ -8,6 +8,7 @@ use Bynn\DecisionNode\Answer;
 use Bynn\DecisionNode\Batch;
 use Bynn\DecisionNode\BatchPage;
 use Bynn\DecisionNode\BatchResult;
+use Bynn\DecisionNode\BoxAnswer;
 use Bynn\DecisionNode\ChoiceAnswer;
 use Bynn\DecisionNode\Decision;
 use Bynn\DecisionNode\DecisionNode;
@@ -16,11 +17,11 @@ use Bynn\DecisionNode\Exception\OverloadedError;
 use Bynn\DecisionNode\Exception\RateLimitError;
 use Bynn\DecisionNode\Exception\RefusalError;
 use Bynn\DecisionNode\Exception\ValidationError;
-use Bynn\DecisionNode\Frame;
 use Bynn\DecisionNode\FrameError;
 use Bynn\DecisionNode\Image;
 use Bynn\DecisionNode\ModelInfo;
 use Bynn\DecisionNode\NumberAnswer;
+use Bynn\DecisionNode\PointAnswer;
 use Bynn\DecisionNode\Reply;
 use Bynn\DecisionNode\Safety;
 use Bynn\DecisionNode\ScoreAnswer;
@@ -29,13 +30,16 @@ use Bynn\DecisionNode\SessionClosed;
 use Bynn\DecisionNode\TruthAnswer;
 use Bynn\DecisionNode\UnknownAnswer;
 use Bynn\DecisionNode\Video;
+use Bynn\DecisionNode\VideoFrame;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Promise\PromiseInterface;
 use Psr\Http\Message\RequestInterface;
 
+use function Bynn\DecisionNode\box;
 use function Bynn\DecisionNode\choice;
 use function Bynn\DecisionNode\number;
+use function Bynn\DecisionNode\point;
 use function Bynn\DecisionNode\score;
 use function Bynn\DecisionNode\truth;
 
@@ -1008,6 +1012,10 @@ final class Suite
                         return score($a->instructions ?? null, $a->levels);
                     case '$number':
                         return number($a->instructions ?? null, $a->min ?? null, $a->max ?? null, $a->step ?? null);
+                    case '$point':
+                        return point($a->instructions ?? null, $a->image ?? null, $a->units ?? null);
+                    case '$box':
+                        return box($a->instructions ?? null, $a->image ?? null, $a->units ?? null);
                     case '$image':
                         return self::image($a, $ctx);
                     case '$video':
@@ -1097,20 +1105,20 @@ final class Suite
     }
 
     /**
-     * `Frame(t, data, media_type)`: `path` and `data_base64` as raw bytes,
+     * `VideoFrame(t, data, media_type)`: `path` and `data_base64` as raw bytes,
      * `data_text` as base64 text unchanged, the media type only when present.
      */
-    private static function frame(\stdClass $a): Frame
+    private static function frame(\stdClass $a): VideoFrame
     {
         $mediaType = isset($a->media_type) ? (string) $a->media_type : null;
         if (isset($a->data_text)) {
-            return Frame::fromBase64($a->t, (string) $a->data_text, $mediaType);
+            return VideoFrame::fromBase64($a->t, (string) $a->data_text, $mediaType);
         }
         $data = isset($a->path)
             ? (string) file_get_contents(self::dir() . '/' . $a->path)
             : (string) base64_decode((string) $a->data_base64, true);
 
-        return Frame::fromData($a->t, $data, $mediaType);
+        return VideoFrame::fromData($a->t, $data, $mediaType);
     }
 
     /**
@@ -1146,6 +1154,8 @@ final class Suite
             $a instanceof TruthAnswer => ['kind' => 'truth', 'truth' => $a->truth],
             $a instanceof ChoiceAnswer => ['kind' => 'choice', 'choice' => $a->choice, 'confidence' => $a->confidence, 'probabilities' => $a->probabilities],
             $a instanceof ScoreAnswer => ['kind' => 'score', 'score' => $a->score, 'confidence' => $a->confidence, 'probabilities' => $a->probabilities, 'legend' => $a->legend],
+            $a instanceof PointAnswer => ['kind' => 'point', 'x' => $a->x, 'y' => $a->y, 'present' => $a->present, 'confidence' => $a->confidence, 'image' => $a->image, 'width' => $a->width, 'height' => $a->height],
+            $a instanceof BoxAnswer => ['kind' => 'box', 'x1' => $a->x1, 'y1' => $a->y1, 'x2' => $a->x2, 'y2' => $a->y2, 'present' => $a->present, 'confidence' => $a->confidence, 'image' => $a->image, 'width' => $a->width, 'height' => $a->height],
             $a instanceof UnknownAnswer => ['kind' => 'unknown', 'type' => $a->type, 'raw' => $a->raw],
             default => throw new Fail('expected an answer, got ' . self::describe($a)),
         };
