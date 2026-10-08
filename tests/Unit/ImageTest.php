@@ -52,10 +52,10 @@ final class ImageTest extends TestCase
         Image::fromPath('x', '/nonexistent/receipt.png');
     }
 
-    public function testNotAnImage(): void
+    public function testNotAnImageIsMadeAndRefusedWhenSent(): void
     {
-        $this->expectException(\InvalidArgumentException::class);
-        Image::fromPath('x', $this->file('plain text'));
+        // The format is checked when the image is sent, not when it is made.
+        self::assertNull(Image::fromPath('x', $this->file('plain text'))->mediaType);
     }
 
     public function testFromDataAndUrl(): void
@@ -67,8 +67,7 @@ final class ImageTest extends TestCase
 
     public function testBytesOfAnUnknownFormatWithoutMediaType(): void
     {
-        $this->expectException(\InvalidArgumentException::class);
-        Image::fromData('x', 'GIF89a');
+        self::assertNull(Image::fromData('x', 'GIF89a')->mediaType);
     }
 
     public function testExactlyOneSource(): void
