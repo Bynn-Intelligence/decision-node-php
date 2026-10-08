@@ -261,8 +261,10 @@ final class ClientTest extends TestCase
 
     public function testSpecVersion(): void
     {
-        self::assertSame('1.0', DecisionNode::SPEC_VERSION);
-        self::assertSame('1.0', \Bynn\DecisionNode\SPEC_VERSION);
+        self::assertSame('1.1', DecisionNode::SPEC_VERSION);
+        self::assertSame('1.1', \Bynn\DecisionNode\SPEC_VERSION);
+        self::assertSame(524288, DecisionNode::DEFAULT_INLINE_THRESHOLD);
+        self::assertSame(524288, \Bynn\DecisionNode\DEFAULT_INLINE_THRESHOLD);
     }
 
     public function testGateWithoutContextSendsOnlyTheAction(): void

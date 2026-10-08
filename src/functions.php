@@ -38,7 +38,22 @@ if (!function_exists(__NAMESPACE__ . '\score')) {
     }
 }
 
+if (!function_exists(__NAMESPACE__ . '\number')) {
+    /**
+     * A number on a grid. See {@see Question::number()}.
+     */
+    function number(mixed $instructions = null, int|float|null $min = null, int|float|null $max = null, int|float|null $step = null): Question
+    {
+        return Question::number($instructions, $min, $max, $step);
+    }
+}
+
 if (!defined(__NAMESPACE__ . '\\SPEC_VERSION')) {
     /** The version of the DecisionNode SDK specification this package implements. */
     define(__NAMESPACE__ . '\\SPEC_VERSION', DecisionNode::SPEC_VERSION);
+}
+
+if (!defined(__NAMESPACE__ . '\\DEFAULT_INLINE_THRESHOLD')) {
+    /** Local images of one request under this many bytes in all are sent inline; at or above it they are uploaded. */
+    define(__NAMESPACE__ . '\\DEFAULT_INLINE_THRESHOLD', DecisionNode::DEFAULT_INLINE_THRESHOLD);
 }

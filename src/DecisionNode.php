@@ -4,23 +4,25 @@ declare(strict_types=1);
 
 namespace Bynn\DecisionNode;
 
-use Bynn\DecisionNode\Exception\AuthenticationError;
-use Bynn\DecisionNode\Exception\ConnectionError;
+use Bynn\DecisionNode\Exception\BadRequestError;
 use Bynn\DecisionNode\Exception\DecisionNodeError;
 use Bynn\DecisionNode\Exception\ServerError;
+use Bynn\DecisionNode\Exception\SessionLimitError;
 use Bynn\DecisionNode\Exception\TimeoutError;
-use Bynn\DecisionNode\Internal\Errors;
+use Bynn\DecisionNode\Exception\ValidationError;
+use Bynn\DecisionNode\Internal\Api;
 use Bynn\DecisionNode\Internal\GuzzleTransport;
+use Bynn\DecisionNode\Internal\Images;
 use Bynn\DecisionNode\Internal\Json;
+use Bynn\DecisionNode\Internal\Prepare;
 use Bynn\DecisionNode\Internal\Retry;
-use Bynn\DecisionNode\Internal\Transport;
+use Bynn\DecisionNode\Internal\Supervisor;
+use Bynn\DecisionNode\Internal\UploadCache;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\ClientInterface as GuzzleClientInterface;
 use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Promise\Each;
 use GuzzleHttp\Promise\PromiseInterface;
-use GuzzleHttp\Psr7\Request;
-use Psr\Http\Message\ResponseInterface;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -33,15 +35,20 @@ use Psr\Log\LoggerInterface;
  *     );
  *     $d['escalate']->truth;                  // 0.94
  *
- * A client can be shared and reuses its connections. Every method has an
+ * A client can be shared and reuses its connections. Every HTTP method has an
  * `...Async` form that returns a promise; `->wait()` on it gives the result.
+ * Sessions are blocking.
+ *
+ * Requests are checked before anything is sent: an image or a question the
+ * API would refuse raises the API's own error (BadRequestError, or
+ * ValidationError for a number grid fault) without a round trip.
  */
 final class DecisionNode
 {
     public const VERSION = '0.1.0';
 
     /** The version of the DecisionNode SDK specification this client implements. */
-    public const SPEC_VERSION = '1.0';
+    public const SPEC_VERSION = '1.1';
 
     public const DEFAULT_BASE_URL = 'https://api.decisionnode.com';
 
@@ -53,6 +60,23 @@ final class DecisionNode
 
     public const DEFAULT_CONCURRENCY = 8;
 
+    /**
+     * Local images of one request (or session frame, or batch line) under
+     * this many bytes in all are sent inline as base64; at or above it they
+     * are uploaded once and sent by upload id.
+     */
+    public const DEFAULT_INLINE_THRESHOLD = 524_288;
+
+    /** The shortest poll interval `runBatch` takes, in seconds. */
+    public const MIN_POLL_INTERVAL = 10.0;
+
+    public const DEFAULT_POLL_INTERVAL = 60.0;
+
+    /** How long `runBatch` waits for a batch to end by default: 26 hours. */
+    public const DEFAULT_BATCH_TIMEOUT = 93_600.0;
+
+    private const STALE_UPLOAD = ['upload_expired', 'upload_consumed', 'upload_not_found', 'upload_incomplete'];
+
     public readonly string $baseUrl;
 
     public readonly string $model;
@@ -61,29 +85,33 @@ final class DecisionNode
 
     public readonly int $maxRetries;
 
-    private readonly ?string $apiKey;
+    public readonly int $inlineThreshold;
 
-    /** @var array<string, string> */
-    private readonly array $headers;
+    /** The Batch API. */
+    public readonly Batches $batches;
 
-    private readonly Transport $transport;
+    private readonly Api $api;
+
+    private readonly Images $images;
 
     /**
      * Every argument is optional.
      *
-     * @param string|null                              $apiKey     default: DECISIONNODE_API_KEY
-     * @param string|null                              $baseUrl    default: DECISIONNODE_BASE_URL, else https://api.decisionnode.com
-     * @param string|null                              $model      default: DECISIONNODE_MODEL, else decisionnode-latest
-     * @param float                                    $timeout    seconds for a whole attempt, above 0 (default 10)
-     * @param int                                      $maxRetries retries after the first attempt, 0 or more (default 2)
-     * @param array<string, string>                    $headers    extra headers sent with every request
-     * @param GuzzleClientInterface|null               $httpClient your own GuzzleHttp\Client, for a proxy or TLS options; redirects are never followed with it either.
-     *                                                             It must use one of Guzzle's own handlers and keep TLS checks on for an https base URL
-     * @param LoggerInterface|null                     $logger     receives one debug line per attempt: method, path, status, request id and timing
+     * @param string|null                              $apiKey          default: DECISIONNODE_API_KEY
+     * @param string|null                              $baseUrl         default: DECISIONNODE_BASE_URL, else https://api.decisionnode.com
+     * @param string|null                              $model           default: DECISIONNODE_MODEL, else decisionnode-latest
+     * @param float                                    $timeout         seconds for a whole attempt, above 0 (default 10)
+     * @param int                                      $maxRetries      retries after the first attempt, 0 or more (default 2)
+     * @param array<string, string>                    $headers         extra headers sent with every API request and session handshake
+     *                                                                  (never with an upload's storage PUT)
+     * @param GuzzleClientInterface|null               $httpClient      your own GuzzleHttp\Client, for a proxy or TLS options; redirects are never followed with it either.
+     *                                                                  It must use one of Guzzle's own handlers and keep TLS checks on for an https base URL
+     * @param LoggerInterface|null                     $logger          receives one debug line per attempt: method, path, status, request id and timing
+     * @param int|null                                 $inlineThreshold bytes; default DEFAULT_INLINE_THRESHOLD (524,288)
      *
-     * @throws \InvalidArgumentException for a timeout of 0 or less, a negative maxRetries, a base URL that is not https
-     *                                   (http is accepted for localhost only), an httpClient that is not a GuzzleHttp\Client
-     *                                   with one of Guzzle's own handlers, or one that turns off TLS checks
+     * @throws \InvalidArgumentException for a timeout of 0 or less, a negative maxRetries or inlineThreshold, a base URL
+     *                                   that is not https (http is accepted for localhost only), an httpClient that is not a
+     *                                   GuzzleHttp\Client with one of Guzzle's own handlers, or one that turns off TLS checks
      */
     public function __construct(
         ?string $apiKey = null,
@@ -93,7 +121,8 @@ final class DecisionNode
         int $maxRetries = self::DEFAULT_MAX_RETRIES,
         array $headers = [],
         ?GuzzleClientInterface $httpClient = null,
-        private readonly ?LoggerInterface $logger = null,
+        ?LoggerInterface $logger = null,
+        ?int $inlineThreshold = null,
     ) {
         if (!is_finite($timeout) || $timeout <= 0.0) {
             throw new \InvalidArgumentException(sprintf('timeout must be a number of seconds above 0, got %s.', var_export($timeout, true)));
@@ -101,18 +130,24 @@ final class DecisionNode
         if ($maxRetries < 0) {
             throw new \InvalidArgumentException(sprintf('maxRetries must be 0 or more, got %d.', $maxRetries));
         }
+        if ($inlineThreshold !== null && $inlineThreshold < 0) {
+            throw new \InvalidArgumentException(sprintf('inlineThreshold must be 0 or more, got %d.', $inlineThreshold));
+        }
 
-        $this->apiKey = self::nonEmpty($apiKey) ?? self::env('DECISIONNODE_API_KEY');
+        $apiKey = self::nonEmpty($apiKey) ?? self::env('DECISIONNODE_API_KEY');
         $this->baseUrl = self::checkBaseUrl(rtrim(self::nonEmpty($baseUrl) ?? self::env('DECISIONNODE_BASE_URL') ?? self::DEFAULT_BASE_URL, '/'));
         $this->model = self::nonEmpty($model) ?? self::env('DECISIONNODE_MODEL') ?? self::DEFAULT_MODEL;
         $this->timeout = $timeout;
         $this->maxRetries = $maxRetries;
-        $this->headers = $headers;
+        $this->inlineThreshold = $inlineThreshold ?? self::DEFAULT_INLINE_THRESHOLD;
 
-        $this->transport = new GuzzleTransport(
+        $transport = new GuzzleTransport(
             $httpClient ?? new GuzzleClient(),
             strtolower((string) parse_url($this->baseUrl, PHP_URL_SCHEME)) === 'https',
         );
+        $this->api = new Api($this->baseUrl, $apiKey, $headers, $timeout, $maxRetries, $transport, 'decisionnode-php/' . self::VERSION, $logger);
+        $this->images = new Images($this->api, new UploadCache(), $this->inlineThreshold);
+        $this->batches = new Batches($this->api, $this->images, $this->model);
     }
 
     /**
@@ -146,6 +181,9 @@ final class DecisionNode
      * @param iterable<array-key, Question|array<string, mixed>|object>|object $questions by question id
      * @param iterable<Image|array<string, mixed>>|null $images up to 4
      * @param string|null                           $model     overrides the client's model for this call
+     *
+     * @throws \InvalidArgumentException for an empty question map or a value that cannot be encoded as JSON
+     * @throws BadRequestError|ValidationError for a question or image the API would refuse, before anything is sent
      */
     public function decide(mixed $state = '', iterable|object $questions = [], ?iterable $images = null, ?string $model = null): Decision
     {
@@ -159,16 +197,67 @@ final class DecisionNode
      * @return PromiseInterface resolves with a Decision
      *
      * @throws \InvalidArgumentException for an empty question map or a value that cannot be encoded as JSON, before anything is sent
+     * @throws BadRequestError|ValidationError for a question or image the API would refuse, before anything is sent
      */
     public function decideAsync(mixed $state = '', iterable|object $questions = [], ?iterable $images = null, ?string $model = null): PromiseInterface
     {
-        return $this->send($this->body($state, $questions, $images, $model));
+        return $this->call('/v1/decide', $state, Prepare::questions($questions), Prepare::images($images), $model)
+            ->then(static fn (array $result): Decision => self::decision($result));
     }
 
-    private function send(string $body): PromiseInterface
+    /**
+     * Asks the questions on `POST /v1/systemone`, the path that takes only the
+     * truth, choice and score types and always names a model.
+     *
+     * @param iterable<array-key, Question|array<string, mixed>|object>|object $questions by question id
+     * @param iterable<Image|array<string, mixed>>|null $images up to 4
+     */
+    public function systemone(mixed $state = '', iterable|object $questions = [], ?iterable $images = null, ?string $model = null): Decision
     {
-        return $this->request('POST', '/v1/decide', $body)->then(
-            static fn (array $result): Decision => self::decision($result),
+        return $this->systemoneAsync($state, $questions, $images, $model)->wait();
+    }
+
+    /**
+     * @param iterable<array-key, Question|array<string, mixed>|object>|object $questions
+     * @param iterable<Image|array<string, mixed>>|null $images
+     *
+     * @return PromiseInterface resolves with a Decision
+     */
+    public function systemoneAsync(mixed $state = '', iterable|object $questions = [], ?iterable $images = null, ?string $model = null): PromiseInterface
+    {
+        return $this->call('/v1/systemone', $state, Prepare::questions($questions, strict: true), Prepare::images($images), $model)
+            ->then(static fn (array $result): Decision => self::decision($result));
+    }
+
+    /**
+     * Sends one decision body: the images inline or uploaded first, then the
+     * request. When the API reports that an upload the client placed is gone
+     * (expired, consumed, not found, incomplete), the client uploads again and
+     * sends once more; a second such answer is raised.
+     *
+     * @param array<string, mixed> $questions wire forms, checked
+     * @param list<mixed>          $images    checked
+     */
+    private function call(string $path, mixed $state, array $questions, array $images, ?string $model, bool $again = false): PromiseInterface
+    {
+        $model = self::nonEmpty($model) ?? $this->model;
+
+        return $this->images->wires($images)->then(
+            function (array $prepared) use ($path, $state, $questions, $images, $model, $again): PromiseInterface {
+                [$wires, $placed] = $prepared;
+                $body = Prepare::body($model, $state, $questions, $wires);
+
+                return $this->api->request('POST', $path, $body)->otherwise(
+                    function (mixed $reason) use ($path, $state, $questions, $images, $model, $again, $placed): PromiseInterface {
+                        if (!$again && $placed !== [] && $reason instanceof BadRequestError && in_array($reason->errorType, self::STALE_UPLOAD, true)) {
+                            $this->images->forget($placed);
+
+                            return $this->call($path, $state, $questions, $images, $model, true);
+                        }
+                        throw $reason instanceof \Throwable ? $reason : new DecisionNodeError('The request failed.');
+                    },
+                );
+            },
         );
     }
 
@@ -191,7 +280,7 @@ final class DecisionNode
      * Runs many decisions, at most `$concurrency` at a time (default 8). Returns
      * one result per request, in input order: a Decision, or the
      * DecisionNodeError that request ended with. One failure does not stop the
-     * others.
+     * others. Uploaded images are shared through the client's upload cache.
      *
      * Each request is an array with the keys of {@see decide()}: `state`,
      * `questions`, `images` and `model`.
@@ -202,6 +291,8 @@ final class DecisionNode
      *
      * @throws \InvalidArgumentException when `$concurrency` is below 1 or a request has an argument
      *                                   problem (see {@see decide()}), before anything is sent
+     * @throws BadRequestError|ValidationError when any request holds a question or image the API would
+     *                                         refuse, before anything is sent
      */
     public function decideMany(iterable $requests, int $concurrency = self::DEFAULT_CONCURRENCY): array
     {
@@ -213,34 +304,37 @@ final class DecisionNode
      *
      * @return PromiseInterface resolves with list<DecisionResult>, in input order
      *
-     * @throws \InvalidArgumentException when `$concurrency` is below 1 or a request has an argument
-     *                                   problem, before anything is sent
+     * @throws \InvalidArgumentException|BadRequestError|ValidationError before anything is sent
      */
     public function decideManyAsync(iterable $requests, int $concurrency = self::DEFAULT_CONCURRENCY): PromiseInterface
     {
         if ($concurrency < 1) {
             throw new \InvalidArgumentException(sprintf('concurrency must be 1 or more, got %d.', $concurrency));
         }
-        // Every body is built first, so an argument problem in any request
-        // is raised before anything is sent.
-        $bodies = [];
+        // Every request is checked first, so a problem in any request is
+        // raised before anything is sent.
+        $prepared = [];
         foreach ($requests as $request) {
             $args = is_array($request) ? $request : get_object_vars($request);
-            $bodies[] = $this->body(
+            $model = $args['model'] ?? null;
+            $prepared[] = [
                 $args['state'] ?? '',
-                $args['questions'] ?? [],
-                $args['images'] ?? null,
-                $args['model'] ?? null,
-            );
+                Prepare::questions($args['questions'] ?? []),
+                Prepare::images($args['images'] ?? null),
+                is_string($model) ? $model : null,
+            ];
         }
-        if ($bodies === []) {
+        if ($prepared === []) {
             return Create::promiseFor([]);
         }
 
-        $results = array_fill(0, count($bodies), null);
-        $promises = (function () use ($bodies): \Generator {
-            foreach ($bodies as $index => $body) {
-                yield $index => $this->send($body);
+        $results = array_fill(0, count($prepared), null);
+        // Images are prepared as each request starts, so a later request
+        // reuses an upload an earlier one made.
+        $promises = (function () use ($prepared): \Generator {
+            foreach ($prepared as $index => [$state, $questions, $images, $model]) {
+                yield $index => $this->call('/v1/decide', $state, $questions, $images, $model)
+                    ->then(static fn (array $result): Decision => self::decision($result));
             }
         })();
 
@@ -331,6 +425,28 @@ final class DecisionNode
     }
 
     /**
+     * One `number` question, sent under the id "number". `$min`, `$max` and
+     * `$step` left out are left out of the request (the server's defaults are
+     * 0, 255 and 1). An answer that is missing or malformed is a ServerError.
+     *
+     * @param iterable<Image|array<string, mixed>>|null $images
+     */
+    public function number(mixed $state = '', mixed $instructions = null, int|float|null $min = null, int|float|null $max = null, int|float|null $step = null, ?iterable $images = null, ?string $model = null): NumberAnswer
+    {
+        return $this->numberAsync($state, $instructions, $min, $max, $step, $images, $model)->wait();
+    }
+
+    /**
+     * @param iterable<Image|array<string, mixed>>|null $images
+     *
+     * @return PromiseInterface resolves with a NumberAnswer; rejects with a ServerError when the answer is missing or malformed
+     */
+    public function numberAsync(mixed $state = '', mixed $instructions = null, int|float|null $min = null, int|float|null $max = null, int|float|null $step = null, ?iterable $images = null, ?string $model = null): PromiseInterface
+    {
+        return $this->single('number', Question::number($instructions, $min, $max, $step), NumberAnswer::class, $state, $images, $model);
+    }
+
+    /**
      * Asks whether an action should run: a `risk` score (none to severe), a
      * `touches_production` truth, and a `verdict` choice of allow, confirm or
      * block. The state sent is `{"action": ..., "context": ...}`.
@@ -383,7 +499,7 @@ final class DecisionNode
         ];
     }
 
-    // ---------------------------------------------------------------- models and raw
+    // ---------------------------------------------------------------- models, uploads and raw
 
     /**
      * The models the API serves, with their published limits (`GET /v1/models`).
@@ -400,7 +516,7 @@ final class DecisionNode
      */
     public function modelsAsync(): PromiseInterface
     {
-        return $this->request('GET', '/v1/models', null)->then(static function (array $result): array {
+        return $this->api->request('GET', '/v1/models')->then(static function (array $result): array {
             $body = self::object($result['body'], $result);
             $models = [];
             foreach (is_array($body['models'] ?? null) ? $body['models'] : [] as $entry) {
@@ -414,9 +530,44 @@ final class DecisionNode
     }
 
     /**
+     * Uploads local images whatever their size (`POST /v1/uploads`, then one
+     * PUT each) and returns the upload id of each, in order. An image this
+     * client uploaded before is not uploaded again. Name an upload with
+     * `Image::fromUploadId()` within its hour, by any key of the workspace.
+     *
+     * @param iterable<Image> $images up to 4 local images
+     *
+     * @return list<string>
+     *
+     * @throws \InvalidArgumentException for an image that is not local bytes
+     * @throws BadRequestError for an image the API would refuse, before anything is sent
+     */
+    public function upload(iterable $images): array
+    {
+        return $this->uploadAsync($images)->wait();
+    }
+
+    /**
+     * @param iterable<Image> $images
+     *
+     * @return PromiseInterface resolves with list<string>
+     */
+    public function uploadAsync(iterable $images): PromiseInterface
+    {
+        $list = Prepare::images($images);
+        foreach ($list as $image) {
+            if (!$image instanceof Image || !$image->isLocal()) {
+                throw new \InvalidArgumentException('upload takes images made from a path, bytes, base64 or a stream.');
+            }
+        }
+        /** @var list<Image> $list */
+        return $this->images->upload($list);
+    }
+
+    /**
      * Sends `$body` to `POST /v1/decide` exactly as given and returns the
      * parsed response body. The way to use an API field this SDK version does
-     * not know yet.
+     * not know yet. Nothing is checked or uploaded.
      *
      * `$body` is an array, an object, or a JSON string sent byte for byte.
      * Use an object (`new \stdClass()`, `(object) []`) where the body needs an
@@ -438,44 +589,218 @@ final class DecisionNode
     {
         $json = is_string($body) ? $body : Json::encode($body);
 
-        return $this->request('POST', '/v1/decide', $json)->then(static fn (array $result): mixed => $result['body']);
+        return $this->api->request('POST', '/v1/decide', $json)->then(static fn (array $result): mixed => $result['body']);
+    }
+
+    // ---------------------------------------------------------------- sessions
+
+    /**
+     * Opens a session (`POST /v1/sessions`): the state and questions are read
+     * once, and every frame sent on the session's socket is answered against
+     * them. A 429 `session_limit_exceeded` is never retried and raises
+     * SessionLimitError.
+     *
+     * @param iterable<array-key, Question|array<string, mixed>|object>|object $questions by question id
+     *
+     * @throws \InvalidArgumentException|BadRequestError|ValidationError before anything is sent
+     * @throws SessionLimitError when the key holds as many open sessions as it may
+     */
+    public function openSession(
+        iterable|object $questions = [],
+        mixed $state = null,
+        mixed $instructions = null,
+        ?string $model = null,
+        ?int $window = null,
+        ?int $ttlSeconds = null,
+    ): Session {
+        return $this->openSessionAsync($questions, $state, $instructions, $model, $window, $ttlSeconds)->wait();
+    }
+
+    /**
+     * @param iterable<array-key, Question|array<string, mixed>|object>|object $questions
+     * @param float|null $delay seconds to wait before sending
+     *
+     * @return PromiseInterface resolves with a Session (its socket is opened with Session::connect())
+     */
+    public function openSessionAsync(
+        iterable|object $questions = [],
+        mixed $state = null,
+        mixed $instructions = null,
+        ?string $model = null,
+        ?int $window = null,
+        ?int $ttlSeconds = null,
+        ?float $delay = null,
+    ): PromiseInterface {
+        $body = ['model' => self::nonEmpty($model) ?? $this->model];
+        if ($instructions !== null) {
+            $body['instructions'] = $instructions;
+        }
+        if ($state !== null) {
+            $body['state'] = $state;
+        }
+        $body['questions'] = (object) Prepare::questions($questions);
+        if ($window !== null) {
+            $body['window'] = $window;
+        }
+        if ($ttlSeconds !== null) {
+            $body['ttl_seconds'] = $ttlSeconds;
+        }
+
+        return $this->api->request('POST', '/v1/sessions', Json::encode($body), Api::RETRY_SESSION_OPEN, delay: $delay)->then(
+            fn (array $result): Session => new Session(self::object($result['body'], $result), $this->api, $this->images, Json::decodeObjects((string) $result['text'])),
+        );
+    }
+
+    /**
+     * Keeps a session running over a long feed of readings: each reading is
+     * sent as a frame as soon as it arrives (the latest wins), every Reply and
+     * FrameError goes to `$onReply`, and the session is opened again when the
+     * server closes it with a code that asks for that (at once when its time
+     * is up or it went idle, after a capped backoff of 1 to 30 s with jitter
+     * otherwise). On 1013 it connects to the same session again.
+     *
+     * When the feed ends it waits for the outstanding replies, ends the
+     * session and returns the last SessionClosed seen (or null). On a code
+     * that is final it stops and returns that SessionClosed.
+     *
+     * @param array<string, mixed>|object                      $body        the arguments of openSession(): questions, state,
+     *                                                                     instructions, model, window, ttl_seconds
+     * @param iterable<array<string, mixed>|object>            $feed        readings, each the arguments of Session::send()
+     * @param callable(Reply|FrameError): void                 $onReply
+     * @param int                                              $maxSessions the most sessions opened in all
+     */
+    public function supervise(array|object $body, iterable $feed, callable $onReply, int $maxSessions = 10): ?SessionClosed
+    {
+        $args = is_array($body) ? $body : get_object_vars($body);
+        $open = function (?float $delay) use ($args): Session {
+            $session = $this->openSessionAsync(
+                questions: $args['questions'] ?? [],
+                state: $args['state'] ?? null,
+                instructions: $args['instructions'] ?? null,
+                model: isset($args['model']) && is_string($args['model']) ? $args['model'] : null,
+                window: isset($args['window']) && is_int($args['window']) ? $args['window'] : null,
+                ttlSeconds: isset($args['ttl_seconds']) && is_int($args['ttl_seconds']) ? $args['ttl_seconds'] : null,
+                delay: $delay,
+            )->wait();
+
+            return $session->connect();
+        };
+
+        $supervisor = new Supervisor(
+            $open,
+            \Closure::fromCallable($onReply),
+            static function (float $seconds): void {
+                usleep((int) ($seconds * 1_000_000));
+            },
+            $maxSessions,
+            $this->timeout,
+        );
+
+        return $supervisor->run($feed);
+    }
+
+    // ---------------------------------------------------------------- batches
+
+    /**
+     * Runs a whole batch: an empty draft, the requests added in calls of at
+     * most 10 MiB, finalize, then a poll every `$pollInterval` seconds (or the
+     * server's Retry-After when longer) until the batch ends, then its
+     * results. If adding fails, the draft is cancelled and the error raised.
+     *
+     * @param iterable<BatchRequest|array<string, mixed>|object> $requests
+     * @param float $pollInterval seconds between polls, at least 10 (default 60)
+     * @param float $timeout      seconds to wait for the batch to end (default 26 hours)
+     *
+     * @return array{0: Batch, 1: list<BatchResult>} the ended batch and its results
+     *
+     * @throws \InvalidArgumentException for a poll interval under 10 s, before anything is sent
+     * @throws TimeoutError when the batch has not ended within `$timeout`
+     */
+    public function runBatch(iterable $requests, float $pollInterval = self::DEFAULT_POLL_INTERVAL, float $timeout = self::DEFAULT_BATCH_TIMEOUT): array
+    {
+        return $this->runBatchAsync($requests, $pollInterval, $timeout)->wait();
+    }
+
+    /**
+     * @param iterable<BatchRequest|array<string, mixed>|object> $requests
+     *
+     * @return PromiseInterface resolves with [Batch, list<BatchResult>]
+     */
+    public function runBatchAsync(iterable $requests, float $pollInterval = self::DEFAULT_POLL_INTERVAL, float $timeout = self::DEFAULT_BATCH_TIMEOUT): PromiseInterface
+    {
+        if (!is_finite($pollInterval) || $pollInterval < self::MIN_POLL_INTERVAL) {
+            throw new \InvalidArgumentException(sprintf('pollInterval must be at least %d seconds, got %s.', (int) self::MIN_POLL_INTERVAL, var_export($pollInterval, true)));
+        }
+        if (!is_finite($timeout) || $timeout <= 0.0) {
+            throw new \InvalidArgumentException(sprintf('timeout must be a number of seconds above 0, got %s.', var_export($timeout, true)));
+        }
+        $list = [];
+        foreach ($requests as $request) {
+            $list[] = $request;
+        }
+        // Every request is checked (and its large images uploaded) before the draft is made.
+        $lines = $list === [] ? Create::promiseFor([]) : $this->batches->lines($list);
+        $started = microtime(true);
+
+        return $lines->then(
+            fn (array $prepared): PromiseInterface => $this->batches->createAsync([])->then(
+                fn (Batch $draft): PromiseInterface => $this->addAndFinalize($draft, $prepared),
+            ),
+        )->then(fn (Batch $batch): PromiseInterface => $this->pollBatch($batch, [], $pollInterval, $timeout, $started, 0.0));
+    }
+
+    /**
+     * Adds the prepared lines to the draft and finalizes it; when adding
+     * fails, the draft is cancelled and the add's error raised.
+     *
+     * @param array<string> $lines
+     *
+     * @return PromiseInterface resolves with the finalized Batch
+     */
+    private function addAndFinalize(Batch $draft, array $lines): PromiseInterface
+    {
+        $id = (string) $draft->id;
+        if ($lines === []) {
+            return $this->batches->finalizeAsync($id);
+        }
+
+        return $this->batches->addLines($id, $lines)->then(
+            fn (): PromiseInterface => $this->batches->finalizeAsync($id),
+            function (mixed $reason) use ($id): PromiseInterface {
+                $raise = static function () use ($reason): never {
+                    throw $reason instanceof \Throwable ? $reason : new DecisionNodeError('The request failed.');
+                };
+
+                return $this->batches->cancelAsync($id)->then($raise, $raise);
+            },
+        );
+    }
+
+    /**
+     * Reads the batch every poll interval (or the server's Retry-After when
+     * longer) until it ends, then its results.
+     *
+     * @param array<string, string> $headers the last answer's headers
+     *
+     * @return PromiseInterface resolves with [Batch, list<BatchResult>]
+     */
+    private function pollBatch(Batch $batch, array $headers, float $pollInterval, float $timeout, float $started, float $waited): PromiseInterface
+    {
+        $id = (string) $batch->id;
+        if ($batch->ended()) {
+            return $this->batches->resultsAsync($id)->then(static fn (array $results): array => [$batch, $results]);
+        }
+        if (max($waited, microtime(true) - $started) >= $timeout) {
+            throw new TimeoutError(sprintf('The batch %s did not end within %s s.', $id, rtrim(rtrim(sprintf('%.3f', $timeout), '0'), '.')));
+        }
+        $wait = max($pollInterval, Retry::after($headers, null) ?? 0.0);
+
+        return $this->batches->poll($id, $wait)->then(
+            fn (array $next): PromiseInterface => $this->pollBatch($next[0], $next[1], $pollInterval, $timeout, $started, $waited + $wait),
+        );
     }
 
     // ---------------------------------------------------------------- internals
-
-    /**
-     * @param iterable<array-key, mixed>|object $questions
-     * @param iterable<mixed>|null              $images
-     */
-    private function body(mixed $state, iterable|object $questions, ?iterable $images, ?string $model): string
-    {
-        $wire = [];
-        $iterable = is_iterable($questions) ? $questions : get_object_vars($questions);
-        foreach ($iterable as $id => $question) {
-            $wire[(string) $id] = $question instanceof Question ? $question->toArray() : $question;
-        }
-        if ($wire === []) {
-            throw new \InvalidArgumentException('questions must hold at least one question.');
-        }
-
-        $body = [
-            'model' => self::nonEmpty($model) ?? $this->model,
-            'state' => $state ?? '',
-            'questions' => (object) $wire,
-        ];
-
-        if ($images !== null) {
-            $list = [];
-            foreach ($images as $image) {
-                $list[] = $image instanceof Image ? $image->toArray() : $image;
-            }
-            if ($list !== []) {
-                $body['images'] = $list;
-            }
-        }
-
-        return Json::encode($body);
-    }
 
     /**
      * Sends one question and returns its answer as `$class`. The helper
@@ -489,9 +814,7 @@ final class DecisionNode
      */
     private function single(string $id, Question $question, string $class, mixed $state, ?iterable $images, ?string $model): PromiseInterface
     {
-        $body = $this->body($state, [$id => $question], $images, $model);
-
-        return $this->request('POST', '/v1/decide', $body)->then(
+        return $this->call('/v1/decide', $state, Prepare::questions([$id => $question]), Prepare::images($images), $model)->then(
             static function (array $result) use ($id, $class): Answer {
                 $decision = self::decision($result);
                 $answer = $decision->answers[$id] ?? null;
@@ -516,102 +839,6 @@ final class DecisionNode
     }
 
     /**
-     * Sends with retries.
-     *
-     * @return PromiseInterface resolves with ["status" => int, "headers" => array<string, string>, "body" => mixed, "text" => string]
-     */
-    private function request(string $method, string $path, ?string $json): PromiseInterface
-    {
-        if ($this->apiKey === null) {
-            return Create::rejectionFor(new AuthenticationError(
-                'No API key: pass apiKey to the client or set DECISIONNODE_API_KEY.',
-            ));
-        }
-
-        $attempt = function (int $n, ?float $wait) use (&$attempt, $method, $path, $json): PromiseInterface {
-            $request = $this->buildRequest($method, $path, $json);
-            $sending = $this->transport->send($request, $wait, $this->timeout);
-            $started = microtime(true) + ($wait ?? 0.0);
-
-            return $sending->then(
-                function (ResponseInterface $response) use (&$attempt, $n, $method, $path, $started): mixed {
-                    $status = $response->getStatusCode();
-                    $headers = self::headers($response);
-                    $this->log($method, $path, $n, $status, $headers['x-request-id'] ?? null, $started);
-
-                    if ($status >= 200 && $status < 300) {
-                        $text = (string) $response->getBody();
-                        try {
-                            $body = Json::decode($text);
-                        } catch (\JsonException $e) {
-                            throw new ServerError(
-                                sprintf('HTTP %d: the response body is not JSON.', $status),
-                                status: $status,
-                                requestId: $headers['x-request-id'] ?? null,
-                                reason: $headers['x-decisionnode-error'] ?? null,
-                                body: $text,
-                                headers: $headers,
-                                previous: $e,
-                            );
-                        }
-
-                        return ['status' => $status, 'headers' => $headers, 'body' => $body, 'text' => $text];
-                    }
-
-                    if (Retry::retryable($status) && $n < $this->maxRetries) {
-                        return $attempt($n + 1, Retry::after($headers) ?? Retry::backoff($n));
-                    }
-
-                    throw Errors::fromResponse($status, $headers, (string) $response->getBody());
-                },
-                function (mixed $reason) use (&$attempt, $n, $method, $path, $started): mixed {
-                    if ($reason instanceof ConnectionError || $reason instanceof TimeoutError) {
-                        $this->log($method, $path, $n, null, null, $started, $reason->getMessage());
-                        if ($n < $this->maxRetries) {
-                            return $attempt($n + 1, Retry::backoff($n));
-                        }
-                    }
-
-                    throw $reason instanceof \Throwable ? $reason : new ConnectionError('The request failed.');
-                },
-            );
-        };
-
-        return $attempt(0, null);
-    }
-
-    private function buildRequest(string $method, string $path, ?string $json): Request
-    {
-        $headers = [
-            'Authorization' => 'Bearer ' . $this->apiKey,
-            'User-Agent' => 'decisionnode-php/' . self::VERSION,
-            'Accept' => 'application/json',
-        ];
-        if ($json !== null) {
-            $headers['Content-Type'] = 'application/json';
-        }
-        $request = new Request($method, $this->baseUrl . $path, $headers, $json);
-        foreach ($this->headers as $name => $value) {
-            $request = $request->withHeader((string) $name, $value);
-        }
-
-        return $request;
-    }
-
-    /**
-     * @return array<string, string>
-     */
-    private static function headers(ResponseInterface $response): array
-    {
-        $headers = [];
-        foreach ($response->getHeaders() as $name => $values) {
-            $headers[strtolower((string) $name)] = implode(', ', $values);
-        }
-
-        return $headers;
-    }
-
-    /**
      * @param array<string, mixed> $result
      *
      * @return array<array-key, mixed>
@@ -632,26 +859,6 @@ final class DecisionNode
         }
 
         return $body;
-    }
-
-    private function log(string $method, string $path, int $attempt, ?int $status, ?string $requestId, float $started, ?string $error = null): void
-    {
-        if ($this->logger === null) {
-            return;
-        }
-        $ms = (int) round(max(0.0, microtime(true) - $started) * 1000);
-        $this->logger->debug(
-            sprintf(
-                'decisionnode: %s %s %s request_id=%s %d ms attempt=%d',
-                $method,
-                $path,
-                $status === null ? 'no response (' . ($error ?? 'error') . ')' : (string) $status,
-                $requestId ?? '-',
-                $ms,
-                $attempt + 1,
-            ),
-            ['method' => $method, 'path' => $path, 'status' => $status, 'request_id' => $requestId, 'duration_ms' => $ms, 'attempt' => $attempt + 1],
-        );
     }
 
     private static function env(string $name): ?string

@@ -4,7 +4,11 @@ declare(strict_types=1);
 
 namespace Bynn\DecisionNode\Tests\Unit;
 
+use Bynn\DecisionNode\Exception\BadRequestError;
 use Bynn\DecisionNode\Image;
+use GuzzleHttp\Psr7\Utils;
+
+use function Bynn\DecisionNode\truth;
 
 final class ImageTest extends TestCase
 {
@@ -52,10 +56,47 @@ final class ImageTest extends TestCase
         Image::fromPath('x', '/nonexistent/receipt.png');
     }
 
-    public function testNotAnImageIsMadeAndRefusedWhenSent(): void
+    public function testNotAnImageIsRefusedWhenSentNotWhenMade(): void
     {
-        // The format is checked when the image is sent, not when it is made.
-        self::assertNull(Image::fromPath('x', $this->file('plain text'))->mediaType);
+        $image = Image::fromPath('x', $this->file('plain text'));
+        self::assertNull($image->mediaType);
+
+        $dn = $this->client([]);
+        try {
+            $dn->decide('', ['q' => truth('?')], [$image]);
+            self::fail('no error');
+        } catch (BadRequestError $e) {
+            self::assertNull($e->status);
+            self::assertNull($e->requestId);
+            self::assertSame('api_usage_error', $e->errorType);
+        }
+        self::assertSame([], $this->history);
+    }
+
+    public function testFromBase64AndStream(): void
+    {
+        $png = (string) file_get_contents(__DIR__ . '/../fixtures/images/3x2.png');
+        self::assertSame($png, Image::fromBase64('a', base64_encode($png))->data);
+        self::assertSame('image/png', Image::fromBase64('a', base64_encode($png))->mediaType);
+
+        $stream = fopen('php://memory', 'r+');
+        self::assertIsResource($stream);
+        fwrite($stream, $png);
+        rewind($stream);
+        self::assertSame($png, Image::fromStream('s', $stream)->data);
+        self::assertSame($png, Image::fromStream('p', Utils::streamFor($png))->data);
+    }
+
+    public function testBadBase64(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        Image::fromBase64('a', 'not base64!');
+    }
+
+    public function testFromUploadId(): void
+    {
+        self::assertSame(['id' => 'r', 'upload_id' => 'upl_1'], Image::fromUploadId('r', 'upl_1')->toArray());
+        self::assertSame(['id' => 'r', 'upload_id' => 'upl_1', 'media_type' => 'image/png'], Image::fromUploadId('r', 'upl_1', 'image/png')->toArray());
     }
 
     public function testFromDataAndUrl(): void
@@ -67,7 +108,8 @@ final class ImageTest extends TestCase
 
     public function testBytesOfAnUnknownFormatWithoutMediaType(): void
     {
-        self::assertNull(Image::fromData('x', 'GIF89a')->mediaType);
+        $this->expectException(BadRequestError::class);
+        $this->client([])->decide('', ['q' => truth('?')], [Image::fromData('x', 'GIF89a')]);
     }
 
     public function testExactlyOneSource(): void

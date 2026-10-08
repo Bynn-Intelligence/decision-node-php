@@ -48,6 +48,12 @@ abstract class TestCase extends \PHPUnit\Framework\TestCase
         $this->handler = new MockHandler($queue);
         $stack = HandlerStack::create($this->handler);
         $stack->push(Middleware::history($this->history));
+        // The history keeps each wait the client asked for; the test does not wait it.
+        $stack->push(static fn (callable $next): \Closure => static function (RequestInterface $request, array $options) use ($next) {
+            unset($options['delay']);
+
+            return $next($request, $options);
+        });
 
         return new DecisionNode(...($args + [
             'apiKey' => self::KEY,
