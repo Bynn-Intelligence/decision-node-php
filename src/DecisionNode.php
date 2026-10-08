@@ -602,7 +602,7 @@ final class DecisionNode
      * @return list<string>
      *
      * @throws \InvalidArgumentException for an image that is not local bytes
-     * @throws BadRequestError for an image the API would refuse, before anything is sent
+     * @throws BadRequestError for more than 16 images or an image the API would refuse, before anything is sent
      */
     public function upload(iterable $images): array
     {
@@ -617,6 +617,12 @@ final class DecisionNode
     public function uploadAsync(iterable $images): PromiseInterface
     {
         $list = Prepare::images($images);
+        if (count($list) > LocalChecks::MAX_UPLOAD_FILES) {
+            // The upload call's own refusal, as the API answers it.
+            $message = sprintf('files: 1 to %d files, got %d.', LocalChecks::MAX_UPLOAD_FILES, count($list));
+
+            throw new BadRequestError($message, errorType: 'api_usage_error', reason: $message);
+        }
         LocalChecks::images($list, $this->held->limits($this->model));
         foreach ($list as $image) {
             if (!$image instanceof Image || !$image->isLocal()) {

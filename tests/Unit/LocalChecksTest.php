@@ -33,7 +33,7 @@ final class LocalChecksTest extends TestCase
             'declared type differs' => [static fn () => [$q, [Image::fromData('p', (string) file_get_contents(self::DIR . '3x2.png'), 'image/jpeg')]], BadRequestError::class],
             'over 10 MB' => [static fn () => [$q, [Image::fromData('b', (string) file_get_contents(self::DIR . '3x2.png') . str_repeat("\0", 10_485_760))]], BadRequestError::class],
             'over 40 megapixels' => [static fn () => [$q, [Image::fromPath('h', self::DIR . '8000x6000-header-only.png')]], BadRequestError::class],
-            'seventeen images' => [static fn () => [$q, [...array_map($png, range('a', 'p')), Image::fromUrl('q', 'https://example.com/q.png')]], BadRequestError::class],
+            'seventeen images' => [static fn () => [$q, [...array_map($png, range('a', 'p')), Image::fromUrl('q', 'https://example.com/q.png')]], ValidationError::class],
             'duplicate ids' => [static fn () => [$q, [$png('a'), $png('a')]], BadRequestError::class],
             'plain http url' => [static fn () => [$q, [Image::fromUrl('u', 'http://example.com/a.png')]], BadRequestError::class],
             'url too long' => [static fn () => [$q, [Image::fromUrl('u', 'https://example.com/' . str_repeat('a', 2030))]], BadRequestError::class],

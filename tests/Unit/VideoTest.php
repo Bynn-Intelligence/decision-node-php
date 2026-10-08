@@ -7,6 +7,7 @@ namespace Bynn\DecisionNode\Tests\Unit;
 use Bynn\DecisionNode\BatchRequest;
 use Bynn\DecisionNode\Decision;
 use Bynn\DecisionNode\Exception\BadRequestError;
+use Bynn\DecisionNode\Exception\ValidationError;
 use Bynn\DecisionNode\Image;
 use Bynn\DecisionNode\Video;
 use Bynn\DecisionNode\VideoFrame;
@@ -73,7 +74,6 @@ final class VideoTest extends TestCase
         $one = [$f(0)];
 
         return [
-            'five videos' => [array_map(static fn (int $i): array => $v('v' . $i, $one), range(1, 5)), [], 'Too many videos: 5, the limit is 4.'],
             'no id' => [[$v('a', $one), ['frames' => $one]], [], 'Video 1 needs an id.'],
             'empty id' => [[$v('', $one)], [], 'Video 0 needs an id.'],
             'id of an image' => [[$v('dock', $one)], [Image::fromUrl('dock', 'https://example.com/d.jpg')], "Video id 'dock' is used twice (ids are unique across images and videos)."],
@@ -195,14 +195,56 @@ final class VideoTest extends TestCase
         self::assertCount(16, $this->sentBody()->images);
 
         try {
-            $dn->decide('s', ['q' => truth('?')], [...$images, Image::fromUrl('i17', 'https://example.com/17.png')]);
+            $dn->decide('s', ['q' => truth('?')], [...$images, Image::fromUrl('i17', 'https://example.com/17.png'), Image::fromUploadId('i18', 'upl_1')]);
+            self::fail('no error');
+        } catch (ValidationError $e) {
+            self::assertNull($e->errorType);
+            self::assertNull($e->status);
+            self::assertNull($e->requestId);
+            self::assertCount(1, $e->entries);
+            $entry = $e->entries[0];
+            self::assertSame('too_long', $entry['type']);
+            self::assertSame(['body', 'images'], $entry['loc']);
+            self::assertSame('List should have at most 16 items after validation, not 18', $entry['msg']);
+            self::assertSame(['field_type' => 'List', 'max_length' => 16, 'actual_length' => 18], $entry['ctx']);
+            // A local image without its bytes, a URL and an upload reference in their wire forms.
+            self::assertEquals((object) ['id' => 'i1', 'media_type' => 'image/png'], $entry['input'][0]);
+            self::assertEquals((object) ['id' => 'i17', 'url' => 'https://example.com/17.png'], $entry['input'][16]);
+            self::assertEquals((object) ['id' => 'i18', 'upload_id' => 'upl_1'], $entry['input'][17]);
+        }
+        self::assertCount(1, $this->history);
+    }
+
+    public function testCountEntriesFollowTheQuestionEntries(): void
+    {
+        $frame = VideoFrame::fromBase64(0, 'QUJD', 'image/jpeg');
+        $videos = array_map(static fn (int $i): Video => Video::of('v' . $i, [$frame]), range(1, 5));
+        $dn = $this->client([]);
+        try {
+            $dn->decide('s', ['route' => ['type' => 'choice', 'instructions' => 'Where?']], videos: $videos);
+            self::fail('no error');
+        } catch (ValidationError $e) {
+            self::assertSame(['missing', 'too_long'], array_column($e->entries, 'type'));
+            self::assertSame(['body', 'videos'], $e->entries[1]['loc']);
+            self::assertSame('List should have at most 4 items after validation, not 5', $e->entries[1]['msg']);
+            self::assertEquals(json_decode((string) json_encode($videos)), $e->entries[1]['input']);
+        }
+        self::assertSame([], $this->history);
+    }
+
+    public function testUploadOfSeventeenIsThePresignsRefusal(): void
+    {
+        $png = (string) file_get_contents(self::DIR . '3x2.png');
+        $dn = $this->client([]);
+        try {
+            $dn->upload(array_map(static fn (int $i): Image => Image::fromData('i' . $i, $png), range(1, 17)));
             self::fail('no error');
         } catch (BadRequestError $e) {
-            self::assertSame('Too many images: 17, the limit is 16.', $e->getMessage());
+            self::assertSame('files: 1 to 16 files, got 17.', $e->getMessage());
             self::assertSame('api_usage_error', $e->errorType);
             self::assertNull($e->status);
         }
-        self::assertCount(1, $this->history);
+        self::assertSame([], $this->history);
     }
 
     public function testSixteenImagesUploadInOnePresign(): void
@@ -295,7 +337,7 @@ final class VideoTest extends TestCase
     public function testDecideManyChecksEveryVideoFirst(): void
     {
         $dn = $this->client([]);
-        $this->expectExceptionMessage('Too many videos: 5, the limit is 4.');
+        $this->expectException(ValidationError::class);
         $ok = Video::of('v', [VideoFrame::fromData(0, self::jpeg())]);
         $dn->decideMany([
             ['questions' => ['q' => truth('?')], 'videos' => [$ok]],

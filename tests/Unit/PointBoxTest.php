@@ -205,8 +205,9 @@ final class PointBoxTest extends TestCase
         try {
             $dn->decide('s', ['q' => truth('?')], [self::belt('a'), self::belt('b'), self::belt('c')]);
             self::fail('no error');
-        } catch (BadRequestError $e) {
-            self::assertSame('Too many images: 3, the limit is 2.', $e->getMessage());
+        } catch (ValidationError $e) {
+            self::assertSame('List should have at most 2 items after validation, not 3', $e->entries[0]['msg']);
+            self::assertSame(['field_type' => 'List', 'max_length' => 2, 'actual_length' => 3], $e->entries[0]['ctx']);
         }
         self::assertCount(1, $this->history);
     }

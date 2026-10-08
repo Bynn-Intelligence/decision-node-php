@@ -26,6 +26,8 @@ use Bynn\DecisionNode\VideoFrame;
 final class LocalChecks
 {
     public const MAX_IMAGES = 16;
+    /** Files one `POST /v1/uploads` takes. */
+    public const MAX_UPLOAD_FILES = 16;
     public const MAX_VIDEOS = 4;
     public const MAX_FPS = 4;
     public const MAX_IMAGE_BYTES = 10_485_760;
@@ -84,9 +86,36 @@ final class LocalChecks
         if ($state !== null && !self::sdl($state)) {
             array_push($entries, ...self::sdlEntries(['body', 'state'], self::json($state)));
         }
-        self::questions($questions, $profile, $limits, $entries, self::imageIds($images));
+        $deferred = self::questionEntries($questions, $profile, $limits, $entries, self::imageIds($images));
+        // More images or videos than a request takes join the same 422, after the questions' entries.
+        $most = self::positive($limits['max_images'] ?? null) ?? self::positive(self::field($limits['images'] ?? null, 'max_images')) ?? self::MAX_IMAGES;
+        foreach (['images' => [$images, $most], 'videos' => [$videos, self::MAX_VIDEOS]] as $field => [$list, $limit]) {
+            if (count($list) > $limit) {
+                $entries[] = self::entry(
+                    'too_long',
+                    ['body', $field],
+                    sprintf('List should have at most %d %s after validation, not %d', $limit, $limit === 1 ? 'item' : 'items', count($list)),
+                    self::json(array_map(self::countedWire(...), $list)),
+                    ['field_type' => 'List', 'max_length' => $limit, 'actual_length' => count($list)],
+                );
+            }
+        }
+        self::raise($entries, $deferred);
         $ids = self::images($images, $limits);
         self::videos($videos, $ids);
+    }
+
+    /**
+     * An image or video as the count's entry shows it: its wire form, with a
+     * local image's bytes left out.
+     */
+    private static function countedWire(mixed $item): mixed
+    {
+        if ($item instanceof Image && $item->isLocal()) {
+            return ['id' => $item->id, 'media_type' => $item->mediaType];
+        }
+
+        return $item instanceof \JsonSerializable ? $item->jsonSerialize() : $item;
     }
 
     /**
@@ -225,7 +254,8 @@ final class LocalChecks
     }
 
     /**
-     * The image rules: how many, ids, and each image's own rules.
+     * The image rules: ids, and each image's own rules. How many is checked
+     * with the request's other 422 entries.
      *
      * @param list<mixed>          $images Image objects or wire maps
      * @param array<string, mixed> $limits
@@ -236,11 +266,6 @@ final class LocalChecks
      */
     public static function images(array $images, array $limits = []): array
     {
-        // A held models entry states the limit at its top level, or under `images`.
-        $most = self::positive($limits['max_images'] ?? null) ?? self::positive(self::field($limits['images'] ?? null, 'max_images')) ?? self::MAX_IMAGES;
-        if (count($images) > $most) {
-            throw self::bad(sprintf('Too many images: %d, the limit is %d.', count($images), $most));
-        }
         $seen = [];
         foreach ($images as $i => $image) {
             $id = $image instanceof Image ? $image->id : self::field($image, 'id');
@@ -260,10 +285,11 @@ final class LocalChecks
     }
 
     /**
-     * The video rules, in the server's order: how many, then each video in
-     * turn (its id, unique across the images and videos, its frames, each
-     * frame's time and media type, then fps and the window). A frame's bytes,
-     * the frame counts and the pixels are the server's to judge.
+     * The video rules, in the server's order, each video in turn: its id,
+     * unique across the images and videos, its frames, each frame's time and
+     * media type, then fps and the window. How many videos is checked with
+     * the request's other 422 entries; a frame's bytes, the frame counts and
+     * the pixels are the server's to judge.
      *
      * @param list<mixed>         $videos   Video objects or wire maps
      * @param array<string, true> $imageIds the request's image ids
@@ -273,9 +299,6 @@ final class LocalChecks
      */
     public static function videos(array $videos, array $imageIds = []): void
     {
-        if (count($videos) > self::MAX_VIDEOS) {
-            throw self::bad(sprintf('Too many videos: %d, the limit is %d.', count($videos), self::MAX_VIDEOS));
-        }
         $seen = $imageIds;
         foreach ($videos as $i => $video) {
             if ($video instanceof Video) {
@@ -515,11 +538,37 @@ final class LocalChecks
      */
     private static function questions(array $questions, string $profile, array $limits, array $entries, ?array $imageIds = null): void
     {
+        self::raise($entries, self::questionEntries($questions, $profile, $limits, $entries, $imageIds));
+    }
+
+    /**
+     * Adds every question's 422 entries and returns the first 400, if any.
+     *
+     * @param array<array-key, mixed>    $questions
+     * @param array<string, mixed>       $limits
+     * @param list<array<string, mixed>> $entries
+     * @param list<string>|null          $imageIds
+     */
+    private static function questionEntries(array $questions, string $profile, array $limits, array &$entries, ?array $imageIds): ?BadRequestError
+    {
         $deferred = null;
         foreach ($questions as $id => $question) {
             $found = self::question((string) $id, self::json($question), $profile, $limits, $entries, $imageIds);
             $deferred ??= $found;
         }
+
+        return $deferred;
+    }
+
+    /**
+     * The 422 when there are entries, else the first 400, else nothing.
+     *
+     * @param list<array<string, mixed>> $entries
+     *
+     * @throws BadRequestError|ValidationError
+     */
+    private static function raise(array $entries, ?BadRequestError $deferred): void
+    {
         if ($entries !== []) {
             throw new ValidationError('', entries: $entries, reason: 'the request does not have the shape the API expects');
         }
