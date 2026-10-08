@@ -39,7 +39,7 @@ final class LocalChecksTest extends TestCase
             'url too long' => [static fn () => [$q, [Image::fromUrl('u', 'https://example.com/' . str_repeat('a', 2030))]], BadRequestError::class],
             'choice without options' => [static fn () => [['q' => choice('?', [])], []], BadRequestError::class],
             'choice with 256 options' => [static fn () => [['q' => choice('?', array_map('strval', range(1, 256)))], []], BadRequestError::class],
-            'score with 11 levels' => [static fn () => [['q' => score('?', range(0, 10))], []], BadRequestError::class],
+            'score with 11 levels' => [static fn () => [['q' => score('?', array_map('strval', range(0, 10)))], []], BadRequestError::class],
             'score without levels' => [static fn () => [['q' => score('?', [])], []], ValidationError::class],
             'truth without text' => [static fn () => [['q' => truth()], []], BadRequestError::class],
             'truth wire map without text' => [static fn () => [['q' => ['type' => 'truth']], []], BadRequestError::class],
@@ -67,9 +67,113 @@ final class LocalChecksTest extends TestCase
             self::assertSame($class, get_class($e));
             self::assertNull($e->status);
             self::assertNull($e->requestId);
-            self::assertNotSame('', $e->getMessage());
+            if ($e instanceof ValidationError) {
+                self::assertNull($e->errorType);
+                self::assertNotEmpty($e->entries);
+            } else {
+                self::assertNotSame('', $e->getMessage());
+            }
         }
         self::assertSame([], $this->history);
+    }
+
+    /**
+     * @return array<string, array{string, ?string}>
+     */
+    public static function urls(): array
+    {
+        return [
+            'plain http' => ['http://example.com/a.png', 'api_usage_error'],
+            'too long' => ['https://example.com/' . str_repeat('a', 2030), 'image_url_refused'],
+            'user information' => ['https://user:pw@example.com/a.png', 'image_url_refused'],
+            'another port' => ['https://example.com:8443/a.png', 'image_url_refused'],
+            'loopback' => ['https://127.0.0.1/a.png', 'image_url_refused'],
+            'private' => ['https://10.1.2.3/a.png', 'image_url_refused'],
+            'metadata' => ['https://169.254.169.254/latest', 'image_url_refused'],
+            'ipv6 loopback' => ['https://[::1]/a.png', 'image_url_refused'],
+            'ipv4 mapped' => ['https://[::ffff:192.168.1.1]/a.png', 'image_url_refused'],
+            'nat64' => ['https://[64:ff9b::a00:1]/a.png', 'image_url_refused'],
+            'public address' => ['https://93.184.216.34/a.png', null],
+            'port 443' => ['https://example.com:443/a.png', null],
+            'a name' => ['https://localhost.example.com/a.png', null],
+        ];
+    }
+
+    #[DataProvider('urls')]
+    public function testUrlRules(string $url, ?string $errorType): void
+    {
+        try {
+            LocalChecks::url('u', $url);
+            self::assertNull($errorType, 'not refused');
+        } catch (BadRequestError $e) {
+            self::assertSame($errorType, $e->errorType);
+        }
+    }
+
+    public function testErrorTypesAreTheServers(): void
+    {
+        $dn = $this->client([]);
+        $cases = [
+            [['q' => choice('?', [])], null, 'Choice question must have at least one choice: q'],
+            [['q' => truth()], null, 'Truth question must have criteria or instructions: q'],
+            [['q' => ['type' => 'opinion', 'instructions' => '?']], 'api_usage_error', 'Invalid request.'],
+        ];
+        foreach ($cases as [$questions, $type, $message]) {
+            try {
+                $dn->decide('s', $questions);
+                self::fail('no error');
+            } catch (BadRequestError $e) {
+                self::assertSame($type, $e->errorType);
+                self::assertSame($message, $e->getMessage());
+            }
+        }
+        try {
+            $dn->systemone('s', ['n' => number('How many?')]);
+            self::fail('no error');
+        } catch (BadRequestError $e) {
+            self::assertSame('api_usage_error', $e->errorType);
+        }
+        try {
+            $dn->decide(['deep' => self::nest(128)], ['q' => truth('?')]);
+            self::fail('no error');
+        } catch (BadRequestError $e) {
+            self::assertSame('Invalid request.', $e->getMessage());
+        }
+        try {
+            $dn->decide('s', ['n' => ['type' => 'number', 'instructions' => '?', 'min' => '5']]);
+            self::fail('no error');
+        } catch (ValidationError $e) {
+            self::assertSame([['type' => 'float_type', 'loc' => ['body', 'questions', 'n', 'number', 'min'], 'msg' => 'Input should be a valid number', 'input' => '5']], $e->entries);
+        }
+        try {
+            $dn->batches->list(limit: 101);
+            self::fail('no error');
+        } catch (BadRequestError $e) {
+            self::assertSame('api_usage_error', $e->errorType);
+        }
+        self::assertSame([], $this->history);
+    }
+
+    public function testNesting127InTheStatePasses(): void
+    {
+        $dn = $this->client([self::truthBody(0.5, 'q')]);
+        $dn->decide(self::nest(126), ['q' => truth('?')]);
+        self::assertCount(1, $this->history);
+    }
+
+    /**
+     * A value inside `$depth` arrays.
+     *
+     * @return list<mixed>
+     */
+    private static function nest(int $depth): array
+    {
+        $value = ['s'];
+        for ($i = 1; $i < $depth; ++$i) {
+            $value = [$value];
+        }
+
+        return $value;
     }
 
     public function testGridSizeInExactDecimals(): void
@@ -88,7 +192,7 @@ final class LocalChecksTest extends TestCase
         $dn->decide('s', [
             'q' => truth(null, 'yes'),
             'c' => choice('?', array_map('strval', range(1, 255))),
-            's' => score('?', range(1, 10)),
+            's' => score('?', array_map('strval', range(1, 10))),
             'n' => number('?', 0, 409.5, 0.1),
         ], [
             Image::fromPath('a', self::DIR . '5x4.jpg'),

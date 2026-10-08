@@ -119,7 +119,21 @@ final class BatchesTest extends TestCase
         try {
             $dn->batches->add('b', [['questions' => ['q' => truth('?')]]]);
             self::fail('no error');
-        } catch (\InvalidArgumentException) {
+        } catch (BadRequestError $e) {
+            self::assertSame('Line 1 has no custom_id.', $e->getMessage());
+            self::assertSame('api_usage_error', $e->errorType);
+        }
+        try {
+            $dn->batches->add('b', [['custom_id' => 'a', 'questions' => ['q' => truth('?')]], ['custom_id' => 'a', 'questions' => ['q' => truth('?')]]]);
+            self::fail('no error');
+        } catch (BadRequestError $e) {
+            self::assertSame('Line 2: custom_id "a" is already in the batch.', $e->getMessage());
+        }
+        try {
+            $dn->batches->add('b', []);
+            self::fail('no error');
+        } catch (BadRequestError $e) {
+            self::assertSame('The call holds no requests.', $e->getMessage());
         }
         self::assertSame([], $this->history);
     }

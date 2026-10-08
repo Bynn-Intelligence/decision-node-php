@@ -4,20 +4,17 @@ declare(strict_types=1);
 
 namespace Bynn\DecisionNode\Internal;
 
-use Bynn\DecisionNode\Exception\BadRequestError;
-use Bynn\DecisionNode\Exception\ValidationError;
 use Bynn\DecisionNode\Question;
 
 /**
- * Turns a call's arguments into their wire forms and checks them before any
- * network call.
+ * Turns a call's arguments into their wire forms.
  *
  * @internal
  */
 final class Prepare
 {
     /**
-     * The questions in wire form by id, checked.
+     * The questions in wire form by id.
      *
      * @param iterable<array-key, mixed>|object $questions
      * @param bool                              $strict    write `truth` questions with the wire type `/v1/systemone` takes
@@ -25,7 +22,6 @@ final class Prepare
      * @return array<string, mixed>
      *
      * @throws \InvalidArgumentException for an empty question map
-     * @throws BadRequestError|ValidationError for a question the API would refuse
      */
     public static function questions(iterable|object $questions, bool $strict = false): array
     {
@@ -43,19 +39,16 @@ final class Prepare
         if ($wire === []) {
             throw new \InvalidArgumentException('questions must hold at least one question.');
         }
-        LocalChecks::questions($wire);
 
         return $wire;
     }
 
     /**
-     * The images as a list, checked.
+     * The images as a list.
      *
      * @param iterable<mixed>|null $images
      *
      * @return list<mixed>
-     *
-     * @throws BadRequestError for an image the API would refuse
      */
     public static function images(?iterable $images): array
     {
@@ -63,7 +56,6 @@ final class Prepare
         foreach ($images ?? [] as $image) {
             $list[] = $image;
         }
-        LocalChecks::images($list);
 
         return $list;
     }

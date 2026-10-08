@@ -73,13 +73,15 @@ final class Session
     /**
      * @internal
      *
-     * @param array<array-key, mixed> $raw the open response exactly as the API sent it
+     * @param array<array-key, mixed> $raw    the open response exactly as the API sent it
+     * @param array<string, mixed>    $held   the models list entry the client holds for the session's model, or []
      */
     public function __construct(
         public readonly array $raw,
         private readonly Api $api,
         private readonly Images $images,
         mixed $shape = null,
+        private readonly array $held = [],
     ) {
         $int = static fn (string $key): ?int => is_int($raw[$key] ?? null) ? $raw[$key] : null;
         $string = static fn (string $key): ?string => is_string($raw[$key] ?? null) ? $raw[$key] : null;
@@ -134,17 +136,24 @@ final class Session
      * @param Image|array<string, mixed>|\stdClass|null $image
      * @param list<string>|null                        $questions the subset of question ids this frame asks
      *
-     * @throws BadRequestError  for an image the API would refuse, before anything is sent
+     * @throws BadRequestError  for a frame the API would refuse (an image, a question id, an empty
+     *                          frame), before anything is sent; the frame takes no seq
      * @throws ConnectionError  when the socket is not open
      */
     public function send(mixed $frame = null, Image|array|\stdClass|null $image = null, ?array $questions = null, ?bool $reset = null, ?int $seq = null): int
     {
+        // A frame that breaks a fixed rule is refused here: nothing goes on the
+        // socket and it takes no seq.
+        $known = is_array($this->raw['questions'] ?? null) ? $this->questions : null;
+        LocalChecks::frame($frame, $image, $questions, $reset, $seq, $known);
+        if ($image instanceof Image) {
+            LocalChecks::image($image, $this->held, frame: true);
+        }
         if ($this->socket === null) {
             throw new ConnectionError('The session is not connected: call connect() first.');
         }
         $wireImage = null;
         if ($image instanceof Image) {
-            LocalChecks::image($image, frame: true);
             [$wires] = $this->images->wires([$image])->wait();
             $wireImage = $wires[0];
             unset($wireImage['id']);

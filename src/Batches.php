@@ -7,7 +7,9 @@ namespace Bynn\DecisionNode;
 use Bynn\DecisionNode\Exception\DecisionNodeError;
 use Bynn\DecisionNode\Exception\ServerError;
 use Bynn\DecisionNode\Internal\Api;
+use Bynn\DecisionNode\Internal\Held;
 use Bynn\DecisionNode\Internal\Images;
+use Bynn\DecisionNode\Internal\LocalChecks;
 use Bynn\DecisionNode\Internal\Json;
 use Bynn\DecisionNode\Internal\Prepare;
 use GuzzleHttp\Promise\Create;
@@ -41,6 +43,7 @@ final class Batches
         private readonly Api $api,
         private readonly Images $images,
         private readonly string $model,
+        private readonly Held $held,
     ) {
     }
 
@@ -185,6 +188,7 @@ final class Batches
      */
     public function listAsync(?int $offset = null, ?int $limit = null): PromiseInterface
     {
+        LocalChecks::listQuery($offset, $limit);
         $query = http_build_query(array_filter(['offset' => $offset, 'limit' => $limit], static fn (?int $v): bool => $v !== null));
 
         return $this->api->request('GET', '/v1/batches' . ($query !== '' ? '?' . $query : ''))->then(
@@ -270,12 +274,14 @@ final class Batches
      */
     public function lines(iterable $requests, bool $requireOne = false): PromiseInterface
     {
-        $prepared = [];
+        $args = [];
         foreach ($requests as $i => $request) {
-            $prepared[] = $this->prepare($request, $i);
+            $args[] = self::arguments($request, $i);
         }
-        if ($requireOne && $prepared === []) {
-            throw new \InvalidArgumentException('Add at least one request.');
+        LocalChecks::batchRequests($args, !$requireOne, $this->held->limits($this->model));
+        $prepared = [];
+        foreach ($args as $request) {
+            $prepared[] = $this->prepare($request);
         }
 
         $promises = [];
@@ -289,41 +295,55 @@ final class Batches
     }
 
     /**
-     * @return array{array<string, mixed>, string, mixed, array<string, mixed>, list<mixed>, array<string, mixed>}
+     * A request's arguments as an array, `custom_id` under its wire name.
+     *
+     * @return array<array-key, mixed>
      */
-    private function prepare(mixed $request, int|string $index): array
+    private static function arguments(mixed $request, int|string $index): array
     {
         if ($request instanceof BatchRequest) {
-            $args = ['custom_id' => $request->customId, 'state' => $request->state, 'questions' => $request->questions, 'images' => $request->images, 'model' => $request->model];
-        } elseif (is_array($request)) {
+            return ['custom_id' => $request->customId, 'state' => $request->state, 'questions' => $request->questions, 'images' => $request->images, 'model' => $request->model];
+        }
+        if (is_array($request)) {
             $args = $request;
         } elseif (is_object($request)) {
             $args = get_object_vars($request);
         } else {
             throw new \InvalidArgumentException(sprintf('Batch request %s must be a BatchRequest or an array.', (string) $index));
         }
-        $customId = $args['custom_id'] ?? $args['customId'] ?? null;
-        if (!is_string($customId) && !is_int($customId)) {
-            throw new \InvalidArgumentException(sprintf('Batch request %s needs a custom_id.', (string) $index));
+        if (!array_key_exists('custom_id', $args) && array_key_exists('customId', $args)) {
+            $args['custom_id'] = $args['customId'];
+            unset($args['customId']);
         }
+
+        return $args;
+    }
+
+    /**
+     * One line's parts, checked as a decision request.
+     *
+     * @param array<array-key, mixed> $args
+     *
+     * @return array{array<string, mixed>, string, mixed, array<string, mixed>, list<mixed>, array<array-key, mixed>}
+     */
+    private function prepare(array $args): array
+    {
         $questions = $args['questions'] ?? [];
         if (!is_iterable($questions) && !is_object($questions)) {
-            throw new \InvalidArgumentException(sprintf('Batch request %s: questions must be a map of questions.', (string) $index));
+            throw new \InvalidArgumentException(sprintf('Batch request %s: questions must be a map of questions.', Json::encode($args['custom_id'] ?? null)));
         }
         $images = $args['images'] ?? null;
         $model = $args['model'] ?? null;
+        $model = is_string($model) && $model !== '' ? $model : $this->model;
+        $state = $args['state'] ?? '';
+        $questions = Prepare::questions($questions);
+        $images = Prepare::images(is_iterable($images) ? $images : null);
+        LocalChecks::decision($model, $state, $questions, $images, $this->held->limits($model));
 
         $tail = $args;
-        unset($tail['custom_id'], $tail['customId'], $tail['state'], $tail['questions'], $tail['images'], $tail['model']);
+        unset($tail['custom_id'], $tail['state'], $tail['questions'], $tail['images'], $tail['model']);
 
-        return [
-            ['custom_id' => $customId],
-            is_string($model) && $model !== '' ? $model : $this->model,
-            $args['state'] ?? '',
-            Prepare::questions($questions),
-            Prepare::images(is_iterable($images) ? $images : null),
-            $tail,
-        ];
+        return [['custom_id' => $args['custom_id']], $model, $state, $questions, $images, $tail];
     }
 
     /**

@@ -23,11 +23,22 @@ final class Images
 {
     private const LOOPBACK = ['localhost', '127.0.0.1', '::1'];
 
+    /** @var array<string, PromiseInterface> uploads in flight by cache key, each resolving with its upload id */
+    private array $inflight = [];
+
+    /** @var \Closure(): float */
+    private readonly \Closure $clock;
+
+    /**
+     * @param (\Closure(): float)|null $clock the current Unix time, the one upload URLs are judged by
+     */
     public function __construct(
         private readonly Api $api,
         private readonly UploadCache $cache,
         public readonly int $inlineThreshold,
+        ?\Closure $clock = null,
     ) {
+        $this->clock = $clock ?? static fn (): float => microtime(true);
     }
 
     /**
@@ -41,6 +52,7 @@ final class Images
         $wires = [];
         $placed = [];
         $pending = [];
+        $shared = [];
         $total = 0;
         foreach ($images as $i => $image) {
             if (!$image instanceof Image) {
@@ -52,29 +64,43 @@ final class Images
                 continue;
             }
             $total += strlen($image->data);
-            $hit = $this->cache->get(UploadCache::key($image->data, (string) $image->mediaType));
+            $key = UploadCache::key($image->data, (string) $image->mediaType);
+            $hit = $this->cache->get($key);
             if ($hit !== null) {
                 $wires[$i] = ['id' => $image->id, 'upload_id' => $hit];
                 $placed[] = $hit;
-                continue;
+            } elseif (isset($this->inflight[$key])) {
+                // Another request is uploading the same bytes: share its upload.
+                $shared[$i] = $this->inflight[$key];
+            } else {
+                $pending[$i] = $image;
             }
-            $pending[$i] = $image;
         }
 
-        if ($pending === [] || $total < $this->inlineThreshold) {
+        $upload = null;
+        if ($pending !== [] && $total >= $this->inlineThreshold) {
+            $upload = $this->upload(array_values($pending));
+        } else {
             foreach ($pending as $i => $image) {
                 $wires[$i] = $image->toArray();
             }
+            $pending = [];
+        }
+        if ($upload === null && $shared === []) {
             ksort($wires);
 
             return Create::promiseFor([array_values($wires), $placed]);
         }
 
-        return $this->upload(array_values($pending))->then(
-            static function (array $ids) use ($wires, $placed, $pending): array {
+        return Utils::all(['shared' => Utils::all($shared), 'upload' => $upload ?? Create::promiseFor([])])->then(
+            static function (array $done) use ($wires, $placed, $pending, $images): array {
+                foreach ($done['shared'] as $i => $id) {
+                    $wires[$i] = ['id' => $images[$i]->id, 'upload_id' => $id];
+                    $placed[] = $id;
+                }
                 foreach (array_keys($pending) as $n => $i) {
-                    $wires[$i] = ['id' => $pending[$i]->id, 'upload_id' => $ids[$n]];
-                    $placed[] = $ids[$n];
+                    $wires[$i] = ['id' => $pending[$i]->id, 'upload_id' => $done['upload'][$n]];
+                    $placed[] = $done['upload'][$n];
                 }
                 ksort($wires);
 
@@ -84,8 +110,9 @@ final class Images
     }
 
     /**
-     * Uploads every image that has no live cache entry: one presign for all of
-     * them, then one PUT each, side by side.
+     * Uploads every image that has no live cache entry and is not already
+     * being uploaded: one presign for all of them, then one PUT each, side by
+     * side. An upload in flight for the same bytes is shared, not repeated.
      *
      * @param list<Image> $images local images, already checked
      *
@@ -93,23 +120,112 @@ final class Images
      */
     public function upload(array $images): PromiseInterface
     {
-        $ids = [];
+        $promises = [];
         $distinct = [];
         foreach ($images as $n => $image) {
             $key = UploadCache::key((string) $image->data, (string) $image->mediaType);
             $hit = $this->cache->get($key);
             if ($hit !== null) {
-                $ids[$n] = $hit;
+                $promises[$n] = Create::promiseFor($hit);
+            } elseif (isset($this->inflight[$key])) {
+                $promises[$n] = $this->inflight[$key];
             } else {
                 $distinct[$key] ??= $image;
+                $promises[$n] = $key;
             }
         }
-        if ($distinct === []) {
-            return Create::promiseFor(self::ordered($images, $ids, []));
+        if ($distinct !== []) {
+            $keys = array_keys($distinct);
+            $batch = $this->presignAndPut($distinct)->then(
+                function (array $fresh) use ($keys): array {
+                    foreach ($keys as $key) {
+                        unset($this->inflight[$key]);
+                    }
+
+                    return $fresh;
+                },
+                function (mixed $reason) use ($keys): never {
+                    foreach ($keys as $key) {
+                        unset($this->inflight[$key]);
+                    }
+                    throw $reason instanceof \Throwable ? $reason : new DecisionNodeError('The upload failed.');
+                },
+            );
+            foreach ($keys as $key) {
+                $this->inflight[$key] = $batch->then(static fn (array $fresh): string => $fresh[$key]);
+            }
+            foreach ($promises as $n => $promise) {
+                if (is_string($promise)) {
+                    $promises[$n] = $this->inflight[$promise];
+                }
+            }
         }
 
+        /** @var array<int, PromiseInterface> $promises */
+        return Utils::all($promises)->then(static function (array $ids): array {
+            ksort($ids);
+
+            return array_values($ids);
+        });
+    }
+
+    /**
+     * One presign for the images, the PUTs side by side, then the cache. A
+     * PUT answered 403 once its URL's time has passed (by the client's clock)
+     * is presigned again once; a 403 inside that time is a refusal.
+     *
+     * @param array<string, Image> $distinct by cache key
+     *
+     * @return PromiseInterface resolves with array<string, string>, the upload id by cache key
+     */
+    private function presignAndPut(array $distinct): PromiseInterface
+    {
+        return $this->presign($distinct)->then(function (array $presigned) use ($distinct): PromiseInterface {
+            [$uploads, $urlsExpire] = $presigned;
+            $puts = [];
+            $n = 0;
+            foreach ($distinct as $key => $image) {
+                $upload = $uploads[$n++];
+                $puts[$key] = $this->api->put($upload['url'], $upload['headers'], (string) $image->data)->then(
+                    static fn (): array => $upload,
+                    function (mixed $reason) use ($urlsExpire, $key, $image): PromiseInterface {
+                        if ($reason instanceof DecisionNodeError && $reason->status === 403 && ($this->clock)() >= $urlsExpire) {
+                            return $this->presign([$key => $image])->then(function (array $again) use ($image): PromiseInterface {
+                                $upload = $again[0][0];
+
+                                return $this->api->put($upload['url'], $upload['headers'], (string) $image->data)->then(static fn (): array => $upload);
+                            });
+                        }
+                        throw $reason instanceof \Throwable ? $reason : new DecisionNodeError('The upload failed.');
+                    },
+                );
+            }
+
+            return Utils::all($puts)->then(function (array $done): array {
+                $fresh = [];
+                foreach ($done as $key => $upload) {
+                    if ($upload['expires_at'] !== null) {
+                        $this->cache->put((string) $key, $upload['upload_id'], $upload['expires_at']);
+                    }
+                    $fresh[(string) $key] = $upload['upload_id'];
+                }
+
+                return $fresh;
+            });
+        });
+    }
+
+    /**
+     * `POST /v1/uploads` for the images.
+     *
+     * @param array<string, Image> $images
+     *
+     * @return PromiseInterface resolves with [the checked uploads in order, the time their URLs expire]
+     */
+    private function presign(array $images): PromiseInterface
+    {
         $files = [];
-        foreach ($distinct as $image) {
+        foreach ($images as $image) {
             $bytes = (string) $image->data;
             $files[] = [
                 'content_type' => (string) $image->mediaType,
@@ -120,28 +236,11 @@ final class Images
         }
 
         return $this->api->request('POST', '/v1/uploads', Json::encode(['files' => $files]))->then(
-            function (array $result) use ($distinct, $images, $ids): PromiseInterface {
-                $uploads = self::uploads($result, count($distinct));
-                $puts = [];
-                $n = 0;
-                foreach ($distinct as $image) {
-                    $puts[] = $this->api->put($uploads[$n]['url'], $uploads[$n]['headers'], (string) $image->data);
-                    ++$n;
-                }
+            function (array $result) use ($images): array {
+                $body = $result['body'];
+                $lifetime = is_array($body) && (is_int($body['expires_in'] ?? null) || is_float($body['expires_in'] ?? null)) ? (float) $body['expires_in'] : 300.0;
 
-                return Utils::all($puts)->then(function () use ($distinct, $uploads, $images, $ids): array {
-                    $fresh = [];
-                    $n = 0;
-                    foreach ($distinct as $key => $image) {
-                        $upload = $uploads[$n++];
-                        if ($upload['expires_at'] !== null) {
-                            $this->cache->put($key, $upload['upload_id'], $upload['expires_at']);
-                        }
-                        $fresh[$key] = $upload['upload_id'];
-                    }
-
-                    return self::ordered($images, $ids, $fresh);
-                });
+                return [self::uploads($result, count($images)), ($this->clock)() + $lifetime];
             },
         );
     }
@@ -154,23 +253,6 @@ final class Images
     public function forget(array $uploadIds): void
     {
         $this->cache->drop($uploadIds);
-    }
-
-    /**
-     * @param list<Image>           $images
-     * @param array<int, string>    $ids    cache hits by position
-     * @param array<string, string> $fresh  new uploads by cache key
-     *
-     * @return list<string>
-     */
-    private static function ordered(array $images, array $ids, array $fresh): array
-    {
-        $out = [];
-        foreach ($images as $n => $image) {
-            $out[] = $ids[$n] ?? $fresh[UploadCache::key((string) $image->data, (string) $image->mediaType)];
-        }
-
-        return $out;
     }
 
     /**

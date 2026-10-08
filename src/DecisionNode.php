@@ -12,8 +12,10 @@ use Bynn\DecisionNode\Exception\TimeoutError;
 use Bynn\DecisionNode\Exception\ValidationError;
 use Bynn\DecisionNode\Internal\Api;
 use Bynn\DecisionNode\Internal\GuzzleTransport;
+use Bynn\DecisionNode\Internal\Held;
 use Bynn\DecisionNode\Internal\Images;
 use Bynn\DecisionNode\Internal\Json;
+use Bynn\DecisionNode\Internal\LocalChecks;
 use Bynn\DecisionNode\Internal\Prepare;
 use Bynn\DecisionNode\Internal\Retry;
 use Bynn\DecisionNode\Internal\Supervisor;
@@ -94,6 +96,8 @@ final class DecisionNode
 
     private readonly Images $images;
 
+    private readonly Held $held;
+
     /**
      * Every argument is optional.
      *
@@ -108,6 +112,8 @@ final class DecisionNode
      *                                                                  It must use one of Guzzle's own handlers and keep TLS checks on for an https base URL
      * @param LoggerInterface|null                     $logger          receives one debug line per attempt: method, path, status, request id and timing
      * @param int|null                                 $inlineThreshold bytes; default DEFAULT_INLINE_THRESHOLD (524,288)
+     * @param (\Closure(): float)|null                  $clock           the current Unix time in seconds, which upload URLs and cached
+     *                                                                  uploads are judged by; default the system clock (for tests)
      *
      * @throws \InvalidArgumentException for a timeout of 0 or less, a negative maxRetries or inlineThreshold, a base URL
      *                                   that is not https (http is accepted for localhost only), an httpClient that is not a
@@ -123,6 +129,7 @@ final class DecisionNode
         ?GuzzleClientInterface $httpClient = null,
         ?LoggerInterface $logger = null,
         ?int $inlineThreshold = null,
+        ?\Closure $clock = null,
     ) {
         if (!is_finite($timeout) || $timeout <= 0.0) {
             throw new \InvalidArgumentException(sprintf('timeout must be a number of seconds above 0, got %s.', var_export($timeout, true)));
@@ -146,8 +153,9 @@ final class DecisionNode
             strtolower((string) parse_url($this->baseUrl, PHP_URL_SCHEME)) === 'https',
         );
         $this->api = new Api($this->baseUrl, $apiKey, $headers, $timeout, $maxRetries, $transport, 'decisionnode-php/' . self::VERSION, $logger);
-        $this->images = new Images($this->api, new UploadCache(), $this->inlineThreshold);
-        $this->batches = new Batches($this->api, $this->images, $this->model);
+        $this->images = new Images($this->api, new UploadCache($clock), $this->inlineThreshold, $clock);
+        $this->held = new Held();
+        $this->batches = new Batches($this->api, $this->images, $this->model, $this->held);
     }
 
     /**
@@ -201,7 +209,9 @@ final class DecisionNode
      */
     public function decideAsync(mixed $state = '', iterable|object $questions = [], ?iterable $images = null, ?string $model = null): PromiseInterface
     {
-        return $this->call('/v1/decide', $state, Prepare::questions($questions), Prepare::images($images), $model)
+        [$questions, $images, $model] = $this->checked($state, Prepare::questions($questions), Prepare::images($images), $model);
+
+        return $this->call('/v1/decide', $state, $questions, $images, $model)
             ->then(static fn (array $result): Decision => self::decision($result));
     }
 
@@ -225,8 +235,26 @@ final class DecisionNode
      */
     public function systemoneAsync(mixed $state = '', iterable|object $questions = [], ?iterable $images = null, ?string $model = null): PromiseInterface
     {
-        return $this->call('/v1/systemone', $state, Prepare::questions($questions, strict: true), Prepare::images($images), $model)
+        [$questions, $images, $model] = $this->checked($state, Prepare::questions($questions, strict: true), Prepare::images($images), $model, 'systemone');
+
+        return $this->call('/v1/systemone', $state, $questions, $images, $model)
             ->then(static fn (array $result): Decision => self::decision($result));
+    }
+
+    /**
+     * Checks a decision request before anything is sent and resolves its model.
+     *
+     * @param array<string, mixed> $questions
+     * @param list<mixed>          $images
+     *
+     * @return array{array<string, mixed>, list<mixed>, string}
+     */
+    private function checked(mixed $state, array $questions, array $images, ?string $model, string $profile = 'decide'): array
+    {
+        $model = self::nonEmpty($model) ?? $this->model;
+        LocalChecks::decision($model, $state, $questions, $images, $this->held->limits($model), $profile);
+
+        return [$questions, $images, $model];
     }
 
     /**
@@ -317,12 +345,14 @@ final class DecisionNode
         foreach ($requests as $request) {
             $args = is_array($request) ? $request : get_object_vars($request);
             $model = $args['model'] ?? null;
-            $prepared[] = [
-                $args['state'] ?? '',
+            $state = $args['state'] ?? '';
+            [$questions, $images, $model] = $this->checked(
+                $state,
                 Prepare::questions($args['questions'] ?? []),
                 Prepare::images($args['images'] ?? null),
                 is_string($model) ? $model : null,
-            ];
+            );
+            $prepared[] = [$state, $questions, $images, $model];
         }
         if ($prepared === []) {
             return Create::promiseFor([]);
@@ -516,7 +546,7 @@ final class DecisionNode
      */
     public function modelsAsync(): PromiseInterface
     {
-        return $this->api->request('GET', '/v1/models')->then(static function (array $result): array {
+        return $this->api->request('GET', '/v1/models')->then(function (array $result): array {
             $body = self::object($result['body'], $result);
             $models = [];
             foreach (is_array($body['models'] ?? null) ? $body['models'] : [] as $entry) {
@@ -524,6 +554,8 @@ final class DecisionNode
                     $models[] = ModelInfo::fromArray($entry);
                 }
             }
+            // Kept for the local checks: a limit only this list states is checked once known.
+            $this->held->keep(array_map(static fn (ModelInfo $m): array => $m->raw, $models));
 
             return $models;
         });
@@ -555,6 +587,7 @@ final class DecisionNode
     public function uploadAsync(iterable $images): PromiseInterface
     {
         $list = Prepare::images($images);
+        LocalChecks::images($list, $this->held->limits($this->model));
         foreach ($list as $image) {
             if (!$image instanceof Image || !$image->isLocal()) {
                 throw new \InvalidArgumentException('upload takes images made from a path, bytes, base64 or a stream.');
@@ -645,9 +678,11 @@ final class DecisionNode
         if ($ttlSeconds !== null) {
             $body['ttl_seconds'] = $ttlSeconds;
         }
+        $model = (string) $body['model'];
+        LocalChecks::sessionOpen($body, $this->held->limits($model));
 
         return $this->api->request('POST', '/v1/sessions', Json::encode($body), Api::RETRY_SESSION_OPEN, delay: $delay)->then(
-            fn (array $result): Session => new Session(self::object($result['body'], $result), $this->api, $this->images, Json::decodeObjects((string) $result['text'])),
+            fn (array $result): Session => new Session(self::object($result['body'], $result), $this->api, $this->images, Json::decodeObjects((string) $result['text']), $this->held->limits($model)),
         );
     }
 
@@ -814,7 +849,9 @@ final class DecisionNode
      */
     private function single(string $id, Question $question, string $class, mixed $state, ?iterable $images, ?string $model): PromiseInterface
     {
-        return $this->call('/v1/decide', $state, Prepare::questions([$id => $question]), Prepare::images($images), $model)->then(
+        [$questions, $images, $model] = $this->checked($state, Prepare::questions([$id => $question]), Prepare::images($images), $model);
+
+        return $this->call('/v1/decide', $state, $questions, $images, $model)->then(
             static function (array $result) use ($id, $class): Answer {
                 $decision = self::decision($result);
                 $answer = $decision->answers[$id] ?? null;

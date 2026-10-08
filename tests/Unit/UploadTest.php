@@ -181,6 +181,51 @@ final class UploadTest extends TestCase
         self::assertCount(2, $this->history);
     }
 
+    public function testParallelRequestsShareOneUpload(): void
+    {
+        $dn = $this->client([self::presigned(['upl_a']), new Response(200), self::truthBody(), self::truthBody()]);
+        $results = $dn->decideMany([
+            ['state' => 'a', 'questions' => ['q' => truth('?')], 'images' => [self::big()]],
+            ['state' => 'b', 'questions' => ['q' => truth('?')], 'images' => [self::big()]],
+        ], concurrency: 2);
+        self::assertCount(2, $results);
+        self::assertCount(4, $this->history, 'one presign, one PUT, two decisions');
+        self::assertSame('upl_a', $this->sentBody(2)->images[0]->upload_id);
+        self::assertSame('upl_a', $this->sentBody(3)->images[0]->upload_id);
+    }
+
+    public function testA403AfterTheUrlExpiredIsPresignedAgainOnce(): void
+    {
+        $now = 1_000_000.0;
+        $late403 = static function () use (&$now): Response {
+            $now += 301;
+
+            return new Response(403, [], '<Error><Code>AccessDenied</Code></Error>');
+        };
+        $dn = $this->client(
+            [self::presigned(['upl_a']), $late403, self::presigned(['upl_b']), new Response(200), self::truthBody()],
+            ['clock' => static function () use (&$now): float {
+                return $now;
+            }],
+        );
+        $dn->decide('s', ['q' => truth('?')], [self::big()]);
+        self::assertCount(5, $this->history);
+        self::assertSame('upl_b', $this->sentBody(4)->images[0]->upload_id);
+    }
+
+    public function testA403InsideTheUrlsTimeIsRaised(): void
+    {
+        $dn = $this->client([self::presigned(['upl_a']), new Response(403, [], '<Error><Code>SignatureDoesNotMatch</Code></Error>')]);
+        try {
+            $dn->decide('s', ['q' => truth('?')], [self::big()]);
+            self::fail('no error');
+        } catch (DecisionNodeError $e) {
+            self::assertSame(403, $e->status);
+            self::assertSame('SignatureDoesNotMatch', $e->reason);
+        }
+        self::assertCount(2, $this->history);
+    }
+
     public function testInlineThresholdOption(): void
     {
         $dn = $this->client([self::presigned(['upl_a']), new Response(200), self::truthBody()], ['inlineThreshold' => 0]);
