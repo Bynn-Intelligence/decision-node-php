@@ -630,7 +630,19 @@ final class Suite
                         $args[(string) $name] = self::decode($value, $ctx);
                     }
                 }
-                self::sessionOf($ctx, $step->send->session)->send(...$args);
+                try {
+                    self::sessionOf($ctx, $step->send->session)->send(...$args);
+                } catch (DecisionNodeError|\InvalidArgumentException $error) {
+                    // A frame that breaks a fixed rule is refused locally and nothing is sent.
+                    if (!isset($step->outcome)) {
+                        throw $error;
+                    }
+                    self::checkOutcome($step->outcome, $error, $where . '.outcome');
+                    continue;
+                }
+                if (isset($step->outcome)) {
+                    throw new Fail(sprintf('%s: expected %s, the frame was sent', $where, $step->outcome->error ?? 'an error'));
+                }
             } elseif (isset($step->read)) {
                 $s = self::sessionOf($ctx, $step->read->session);
                 $count = $step->read->count ?? null;
@@ -784,6 +796,7 @@ final class Suite
      */
     private static function client(\stdClass $case, array $extraHeaders, ?array &$waits = null): DecisionNode
     {
+        $session = $extraHeaders['x-mock-session'] ?? '';
         $mock = self::startMock();
         foreach (self::ENV_VARS as $var) {
             putenv($var);
@@ -808,6 +821,15 @@ final class Suite
         }
         if (isset($spec->inline_threshold)) {
             $args['inlineThreshold'] = (int) $spec->inline_threshold;
+        }
+        if (($spec->clock ?? null) === 'mock') {
+            // The SDK's injectable clock reads the mock's clock for this
+            // session, so a case that moves the mock's time moves the SDK's.
+            $args['clock'] = static function () use ($session): float {
+                $clock = json_decode(self::control('GET', '/_mock/clock?session=' . rawurlencode($session)), false, 512, JSON_THROW_ON_ERROR);
+
+                return (float) $clock->epoch_seconds;
+            };
         }
         if (property_exists($spec, 'base_url')) {
             if ($spec->base_url !== null) {
@@ -930,6 +952,14 @@ final class Suite
                         return self::ref((string) $a, $ctx);
                     case '$text':
                         return str_repeat((string) $a->repeat, (int) $a->times);
+                    case '$nest':
+                        // the value inside depth arrays: [[[...value...]]]
+                        $out = self::decode($a->value, $ctx);
+                        for ($i = 0; $i < (int) $a->depth; ++$i) {
+                            $out = [$out];
+                        }
+
+                        return $out;
                     case '$truth':
                         return truth($a->instructions ?? null, $a->true ?? null, $a->false ?? null);
                     case '$choice':
