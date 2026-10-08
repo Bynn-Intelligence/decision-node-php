@@ -978,8 +978,9 @@ final class LocalChecks
     }
 
     /**
-     * A number as the server writes it in a message: up to six significant
-     * digits, without trailing zeros (`1.5`, `4`, `1000.25`).
+     * A number as the server writes it in a message, printf's `%g`: six
+     * significant digits without trailing zeros, in exponent form below
+     * 0.0001 and from 1,000,000 (`1.5`, `4`, `1000.25`, `1e+06`, `1e-05`).
      */
     private static function shortNumber(int|float $value): string
     {

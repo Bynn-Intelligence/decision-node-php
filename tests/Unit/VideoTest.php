@@ -118,6 +118,33 @@ final class VideoTest extends TestCase
         self::assertSame([], $this->history);
     }
 
+    /**
+     * @return array<string, array{int|float, string}>
+     */
+    public static function numbersInMessages(): array
+    {
+        return [
+            'one and a half' => [1.5, '1.5'],
+            'whole' => [4, '4'],
+            'whole as a float' => [4.0, '4'],
+            'a quarter' => [0.25, '0.25'],
+            'a million' => [1000000, '1e+06'],
+            'seven digits' => [1234567.5, '1.23457e+06'],
+            'a hundred thousandth' => [0.00001, '1e-05'],
+            'six digits' => [1000.25, '1000.25'],
+            'rounded up to a million' => [999999.5, '1e+06'],
+            'zero' => [0, '0'],
+        ];
+    }
+
+    #[DataProvider('numbersInMessages')]
+    public function testNumbersInMessagesAreWrittenAsTheServerWritesThem(int|float $t, string $written): void
+    {
+        $dn = $this->client([]);
+        $this->expectExceptionMessage(sprintf("Video 'dock': frame 1: t must be larger than the frame before it (%s).", $written));
+        $dn->decide('s', ['q' => truth('?')], videos: [Video::of('dock', [Frame::fromData($t, self::jpeg()), Frame::fromData($t, self::jpeg())])]);
+    }
+
     public function testTypedFramesAreCheckedToo(): void
     {
         $dn = $this->client([]);
