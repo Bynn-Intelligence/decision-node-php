@@ -36,6 +36,8 @@ final class LocalChecks
     public const MAX_IMAGE_BYTES = 10_485_760;
     public const MAX_IMAGE_PIXELS = 40_000_000;
     public const MAX_URL_LENGTH = 2048;
+    /** The longest image id, in characters (code points). */
+    public const MAX_IMAGE_ID_CHARS = 64;
     public const MAX_CHOICE_OPTIONS = 255;
     public const MAX_SCORE_LEVELS = 10;
     public const MAX_GRID_VALUES = 4096;
@@ -293,6 +295,9 @@ final class LocalChecks
             $id = $image instanceof Image ? $image->id : self::field($image, 'id');
             if (!is_string($id) || $id === '') {
                 throw self::bad(sprintf('Image %d needs an id.', $i));
+            }
+            if (mb_strlen($id, 'UTF-8') > self::MAX_IMAGE_ID_CHARS) {
+                throw self::bad(sprintf('Image %d: its id is longer than %d characters.', $i, self::MAX_IMAGE_ID_CHARS));
             }
             if (isset($seen[$id])) {
                 throw self::bad(sprintf('Duplicate image id: %s', $id));

@@ -32,10 +32,14 @@ final class Errors
      */
     public static function fromResponse(int $status, array $headers, string $text): DecisionNodeError
     {
+        $json = true;
         try {
             $body = Json::decode($text);
         } catch (\JsonException) {
+            // Not JSON (an edge's or a proxy's page, or no body): classed by
+            // its status alone, the body read into no field.
             $body = null;
+            $json = false;
         }
 
         $detail = is_array($body) && array_key_exists('detail', $body) ? $body['detail'] : null;
@@ -56,12 +60,12 @@ final class Errors
         // The error's own message is the server's message, unchanged; the
         // explanation in words from x-decisionnode-error is kept in `reason`.
         $fields = [
-            'message' => $message ?? '',
+            'message' => $json ? ($message ?? '') : self::statusMessage($status, $headers['x-request-id'] ?? null),
             'status' => $status,
             'errorType' => $errorType,
             'requestId' => $headers['x-request-id'] ?? null,
             'reason' => $headers['x-decisionnode-error'] ?? null,
-            'body' => $body ?? $text,
+            'body' => $json ? $body : null,
             'headers' => $headers,
             'boosters' => self::boosters($headers['x-decisionnode-boosters'] ?? null),
         ];
@@ -112,6 +116,32 @@ final class Errors
         // Every other status, 3xx included (redirects are never followed): the
         // base class with the status.
         return new DecisionNodeError(...$fields);
+    }
+
+    /** The words of an error status whose body is not JSON, the same in every DecisionNode SDK. */
+    private const STATUS_TEXT = [
+        400 => 'Bad Request', 401 => 'Unauthorized', 402 => 'Payment Required', 403 => 'Forbidden',
+        404 => 'Not Found', 405 => 'Method Not Allowed', 408 => 'Request Timeout', 409 => 'Conflict',
+        410 => 'Gone', 413 => 'Content Too Large', 422 => 'Unprocessable Content', 429 => 'Too Many Requests',
+        500 => 'Internal Server Error', 502 => 'Bad Gateway', 503 => 'Service Unavailable',
+        504 => 'Gateway Timeout', 529 => 'Overloaded',
+    ];
+
+    /**
+     * The message of an error whose body is not JSON: "HTTP 413 Content Too
+     * Large", then " (request id <id>)" when the response has one.
+     */
+    public static function statusMessage(int $status, ?string $requestId): string
+    {
+        $message = 'HTTP ' . $status;
+        if (isset(self::STATUS_TEXT[$status])) {
+            $message .= ' ' . self::STATUS_TEXT[$status];
+        }
+        if ($requestId !== null && $requestId !== '') {
+            $message .= ' (request id ' . $requestId . ')';
+        }
+
+        return $message;
     }
 
     /**

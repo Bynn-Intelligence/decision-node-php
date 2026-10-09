@@ -427,6 +427,8 @@ A request is an array with `custom_id` and the arguments of `decide` (`state`, `
 
 Every error derives from `Bynn\DecisionNode\Exception\DecisionNodeError`, so `catch (DecisionNodeError $e)` catches them all. Its message, `getMessage()`, is the server's message exactly as sent (empty when the server sent none), or the SDK's description when there was no response or the response could not be read. It also has `status`, `errorType`, `requestId` and `reason` (the server's explanation from the `x-decisionnode-error` header, for example "question 'q': a score takes up to 10 levels, got 11").
 
+An error whose body is not JSON (a page from a proxy or the service's edge, or no body) is classed by its status alone, as in the table: a 413 is a `RequestTooLargeError`, a 400 a `BadRequestError` (never a `ContextLimitError`), a 403 a `PermissionDeniedError` (never a `RefusalError`), a 422 a `ValidationError` with no entries. `errorType` is `null`, `requestId` and `reason` come from their headers, nothing is read from the body, and the message is `HTTP <status> <text>`, then ` (request id <id>)` when the response has one: `HTTP 413 Content Too Large`, `HTTP 408 Request Timeout (request id req_...)`. Retries are as for any response: a 408 is retried, a 413 never.
+
 Only a 2xx response with a JSON body is a success. Redirects are never followed, so your key never goes to another URL or over plain HTTP.
 
 | Status | Exception | Extra fields |
@@ -466,7 +468,7 @@ The SDK checks every fixed rule the API documents before sending, so the server 
 | Fault | Raised as |
 |---|---|
 | A choice with no options or more than 255, a score with more than 10 levels, a truth question with neither instructions nor criteria, a number, point or box question without instructions | `BadRequestError` with the API's message and no `errorType` |
-| An unknown question type, objects and arrays nested more than 128 deep, an image fault (not JPEG, PNG or WebP, over 10 MB or 40 megapixels, an empty or repeated id, an image URL that is not `https`), a video fault (see [Videos](#videos)), an upload id given with another media type, a batch request without a valid or with a repeated `custom_id`, an empty `add`, `list` paging out of range | `BadRequestError`, `errorType` `api_usage_error` |
+| An unknown question type, objects and arrays nested more than 128 deep, an image fault (not JPEG, PNG or WebP, over 10 MB or 40 megapixels, an empty id, an id over 64 characters counted as code points ("Image 1: its id is longer than 64 characters.", images counted from 0), a repeated id, an image URL that is not `https`), a video fault (see [Videos](#videos)), an upload id given with another media type, a batch request without a valid or with a repeated `custom_id`, an empty `add`, `list` paging out of range | `BadRequestError`, `errorType` `api_usage_error` |
 | A request body, or a batch line, over 25 MiB (26,214,400 bytes): a long state, many video frames, inline images | `RequestTooLargeError`, `errorType` `request_too_large_error` |
 | An image URL over 2,048 characters, with user information, on a port other than 443, or on a literal private, loopback or reserved address | `BadRequestError`, `errorType` `image_url_refused` |
 | More than 16 images or more than 4 videos in a request (a held lower image limit once `models()` has been called): one `too_long` entry for each, after the questions' entries | `ValidationError` |
