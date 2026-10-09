@@ -19,7 +19,7 @@ Implements version 1.3 of the DecisionNode SDK specification (`SPEC_VERSION` `"1
 - Fallback: a `fallback` option on `decide`, the helpers (and their `Async` forms), `decideMany`'s requests and `BatchRequest`, sent as `"fallback": true | false` only when given; `fallback: false` makes a request for `decisionnode-1.0` wait for its own model (the 529, retried as any) rather than be answered by `decisionnode-1.0-flash`. `Decision::$fallback`, a `Fallback` (`servedModel`, `requestedModel`) from the `x-decisionnode-fallback` and `x-decisionnode-requested-model` headers, null on an ordinary answer.
 
 - An error whose body is not JSON (an edge's or a proxy's page, or no body) is classed by its status alone, with `errorType` null, `requestId` and `reason` from their headers, nothing read from the body (`body` is null), and the message `HTTP <status> <text>` from a fixed table (`HTTP 413 Content Too Large`), then ` (request id <id>)` when sent.
-- An image id over 64 characters (code points) is refused before anything is sent: "Image <n>: its id is longer than 64 characters.", after the empty-id check and before the duplicate check.
+- An image id over 64 characters (code points) is refused before anything is sent: "Image <n>: its id is longer than 64 characters.", after the empty-id check and before the duplicate check, on `decide`, the helpers, `decideMany` (for the whole call), batch lines and `checkRequest`; a session frame's image goes without its id and is not checked for it.
 
 ### Changed
 
