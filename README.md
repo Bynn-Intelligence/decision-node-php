@@ -1,8 +1,8 @@
 # DecisionNode PHP SDK
 
-The PHP client for the [DecisionNode](https://decisionnode.com) API: ask yes-or-no, choice, score and number questions about any text, JSON, image or video, point to a spot or draw a box in an image, and get probabilities back. One-off decisions, live sessions that answer a stream of frames, and batches at half the price.
+The PHP client for the [DecisionNode](https://decisionnode.com) API: ask yes-or-no, choice, score and number questions about any text, JSON, image or video, point to a spot or draw a box in an image, and get probabilities back. One-off decisions, live sessions that answer a stream of frames, and batches at half the price. Boosters add specialist readings of your images (an age, whether a picture was AI-generated) to a decision as evidence, and your own fine-tuned models are called by name.
 
-Implements version 1.2 of the DecisionNode SDK specification, which the package states as `DecisionNode::SPEC_VERSION` (also `Bynn\DecisionNode\SPEC_VERSION`). Requires PHP 8.2 or later.
+Implements version 1.3 of the DecisionNode SDK specification, which the package states as `DecisionNode::SPEC_VERSION` (also `Bynn\DecisionNode\SPEC_VERSION`). Requires PHP 8.2 or later.
 
 ## Install
 
@@ -116,21 +116,21 @@ Answers are read by question id, `$d['route']` or `$d->answers['route']`. An ans
 
 | Method | Does | Returns |
 |---|---|---|
-| `decide($state, $questions, $images, $videos, $model)` | One `POST /v1/decide` | `Decision` |
+| `decide($state, $questions, $images, $videos, $model, $boosters)` | One `POST /v1/decide` | `Decision` |
 | `decideMany($requests, $concurrency = 8)` | One decision per request, at most `$concurrency` at a time | A list of `DecisionResult` in input order: each a `Decision` or the `DecisionNodeError` that request ended with |
 | `check($state, $instructions, $ifTrue, $ifFalse)` | One `truth` question | `TruthAnswer`; a `ServerError` when the answer is missing or malformed |
 | `classify($state, $instructions, $options)` | One `choice` question | `ChoiceAnswer`; a `ServerError` when the answer is missing or malformed |
 | `score($state, $instructions, $levels)` | One `score` question | `ScoreAnswer`; a `ServerError` when the answer is missing or malformed |
 | `number($state, $instructions, $min, $max, $step)` | One `number` question | `NumberAnswer`; a `ServerError` when the answer is missing or malformed |
 | `gate($action, $context)` | Whether an action should run: a `risk` score, a `touches_production` truth and an `allow`, `confirm` or `block` verdict (wording below) | `Decision` |
-| `models()` | `GET /v1/models` | A list of `ModelInfo` with `name`, `description`, `releaseDate` and `limits` (every other field of the entry, such as `context_tokens`, `number_max_grid_values`, `upload_max_bytes`, `sessions` and `batch`) |
+| `models()` | `GET /v1/models` | A list of `ModelInfo` with `name`, `description`, `releaseDate`, `version` and `limits` (every other field of the entry, such as `context_tokens`, `number_max_grid_values`, `upload_max_bytes`, `sessions` and `batch`); your fine-tuned models also have `fineTuned`, `base`, `adapterVersion` and `status` (see [Fine-tuned models](#fine-tuned-models)) |
 | `upload($images)` | Uploads local images whatever their size | One upload id per image |
 | `openSession(...)` | `POST /v1/sessions` | `Session` (see [Sessions](#sessions)) |
 | `supervise($body, $feed, $onReply)` | Keeps a session running over a long feed | The last `SessionClosed`, or `null` |
 | `batches->create(...)` and the other batch calls, `runBatch(...)` | The Batch API | `Batch`, `BatchResult` (see [Batches](#batches)) |
 | `decideRaw($body)` | Sends `$body` exactly as given | The response body as an array |
 
-`check`, `classify`, `score`, `number` and `gate` also take `$images`, `$videos` and `$model`, like `decide`. `$state` is a string or any JSON value; leaving it out sends an empty string. `decideMany` checks every request before it sends any: a `$concurrency` below 1, an argument problem in any one of the requests (an empty question map, say), or a question, image or video the API would refuse throws, and nothing is sent, not even the valid requests.
+`check`, `classify`, `score`, `number` and `gate` also take `$images`, `$videos`, `$model` and `$boosters`, like `decide`. `$state` is a string or any JSON value; leaving it out sends an empty string. `decideMany` checks every request before it sends any: a `$concurrency` below 1, an argument problem in any one of the requests (an empty question map, say), or a question, image or video the API would refuse throws, and nothing is sent, not even the valid requests.
 
 `gate` sends the state `{"action": ..., "context": ...}` and these three questions, word for word the same in every DecisionNode SDK:
 
@@ -140,7 +140,7 @@ Answers are read by question id, `$d['route']` or `$d->answers['route']`. An ans
 | `touches_production` | truth | Does this action change a production system, production data or anything customers use? | |
 | `verdict` | choice | Should this action run as it is, wait for a person to confirm it, or be blocked? | `allow` "safe to run without asking", `confirm` "a person should confirm it first", `block` "should not run" |
 
-A `Decision` has `answers`, `model` (the resolved model version), `usage->inputTokens`, `usage->outputTokens`, `usage->videoFrames` and `usage->videoSeconds` (for a request with videos, `null` otherwise), `warnings` (a list of strings, empty unless the API sent some), `requestId`, `latencyMs` (the server's), `safety` and `raw` (the parsed body).
+A `Decision` has `answers`, `model` (the resolved model version), `usage->inputTokens`, `usage->outputTokens`, `usage->videoFrames` and `usage->videoSeconds` (for a request with videos, `null` otherwise), `warnings` (a list of strings, empty unless the API sent some), `evidence`, `usage->boosterTokens` and `usage->boosters` (for a request with boosters, `null` otherwise; see [Boosters](#boosters)), `requestId`, `latencyMs` (the server's), `safety` and `raw` (the parsed body).
 
 ```php
 $answer = $dn->check('Refund me now or I cancel.', 'Is the customer asking for a refund?');
@@ -276,6 +276,67 @@ To turn a video file into frames, use the `dn` command line, which samples the f
 dn truth "Does a person fall in the video?" --video dock.mp4 --fps 2
 ```
 
+## Boosters
+
+A booster is a specialist model that reads the request's images before the decision. Its reading is added to what the model sees as evidence, and comes back in the response. The model still answers every question: a booster never answers one, and a request without boosters is answered exactly as before.
+
+| Booster | Reads | Each reading |
+|---|---|---|
+| `age` (`Booster::AGE`) | A picture of a person; the largest face is read | `AgeReading`: `image`, `faces`, and `ageYears`, `low`, `high` (the range, in years) and `confidence`, each `null` when `faces` is 0 |
+| `ai_generated` (`Booster::AI_GENERATED`) | Any picture | `AiGeneratedReading`: `image`, `generated` (the probability that an image generator made it), `confidence`, `method` (`inference`, read from the pixels, or `c2pa`, the file's Content Credentials say so), `topGenerator` (`['name' => ..., 'probability' => ...]`) and `c2paSigner` (who signed the file's Content Credentials, `null` when it has none) |
+
+```php
+use Bynn\DecisionNode\{AgeReading, AiGeneratedReading, Booster, Image};
+
+$d = $dn->decide(
+    images: [
+        Image::fromUrl('selfie', 'https://files.example.com/signup/88/selfie.jpg'),
+        Image::fromUrl('listing', 'https://files.example.com/listings/4411/photo.jpg'),
+    ],
+    boosters: [
+        Booster::AGE,
+        new Booster(Booster::AI_GENERATED, images: ['listing'], require: true),
+    ],
+    questions: [
+        'adult' => truth('Is the person in `selfie` an adult?'),
+        'synthetic' => truth('Is `listing` AI-generated?'),
+    ],
+);
+
+$d['adult']->truth;
+foreach ($d->evidence['age']->results as $reading) {
+    if ($reading instanceof AgeReading && $reading->faces > 0) {
+        echo "{$reading->image}: about {$reading->ageYears} ({$reading->low} to {$reading->high})\n";
+    }
+}
+foreach ($d->evidence['ai_generated']->results as $reading) {
+    if ($reading instanceof AiGeneratedReading) {
+        echo "{$reading->image}: {$reading->generated} by {$reading->method}\n";
+    }
+}
+$d->usage->boosterTokens;  // the readings' share of the input tokens
+$d->usage->boosters;       // the booster calls billed
+```
+
+`$boosters` takes up to 4 boosters, each at most once, in the order you give: a booster's name as a string, a `Booster`, or a booster in its wire form (`['booster' => 'age']`). Names are plain strings, so a booster added to the API later works with this version too.
+
+| `new Booster(...)` argument | Sends |
+|---|---|
+| `name` | The booster's name. |
+| `images` | The ids of the request's images the booster reads. Left out: every image of the request. |
+| `require` | `true`: a booster that fails or does not answer in time fails the request with a 529 `OverloadedError` whose `errorType` is `booster_unavailable`, retried like any 529. Left out or `false`: the decision runs without that reading, and its evidence says why. |
+| `options` | The booster's settings. Neither booster has any today. |
+
+`$d->evidence` holds one `Evidence` per booster the request named, by name, in the request's order: `version` (the booster's version, such as `age-v3`), `status` (`ok`; `timeout`, no answer in its time; `error`; `skipped`, none of the request's images is one it reads), `latencyMs` and `results`, one reading per image read, empty unless `status` is `ok`. A reading of a booster this version does not know, or one with a field missing, is an `UnknownReading` whose `raw` holds its fields; the decision does not fail. Without boosters, `evidence` and both usage fields are `null`.
+
+Boosters read images in every form an image takes: URL, inline bytes and upload. Every question sees every reading. The one-question helpers, `gate`, `decideMany`, batch requests and `checkRequest` take boosters as `decide` does; sessions do not. The SDK checks nothing about boosters before sending: which boosters exist and which your workspace may use is the API's to answer, before any booster runs and before any charge. Every booster is on for a new workspace, and an owner or admin can turn one off in the console.
+
+A booster call costs USD 0.002: one call per booster and image read with status `ok`. A picture the same booster read for your workspace in the last hour is not billed again, a booster that timed out or failed is free, and a request the safety check refuses pays for none. The readings' tokens are input tokens at the model's price.
+
+## Fine-tuned models
+
+A model you fine-tune on your own labelled decisions, in the console, is called by its name as `$model`: `decisionnode-1.0-flash@acme/fraud` (the version deployed most recently) or `decisionnode-1.0-flash@acme/fraud:3` (one version). The name is sent as given; only your workspace's keys can call it, and a name the API does not know for your workspace is a `BadRequestError`, "Unknown model: <name>". `$d->model` carries the name pinned to the version that answered. `models()` lists your fine-tuned models beside the catalogue's, with `fineTuned` true (null for a catalogue model), `base` (the model it was trained from), `adapterVersion` (its version number) and `status`: `deployed` answers decisions, `ready` is trained and not deployed.
+
 ## Sessions
 
 A session reads its state and questions once, then answers every frame you send on its socket: telemetry from a drone, a video feed's latest frame, a chat's latest message. Frames are sent without waiting; when they arrive faster than they are answered, the latest wins and its reply lists the frames it superseded in `dropped`.
@@ -364,11 +425,11 @@ Only a 2xx response with a JSON body is a success. Redirects are never followed,
 | 400 | `BadRequestError`; `ContextLimitError` when the request is larger than the model's input limit | |
 | 401 | `AuthenticationError` (also raised before sending when no API key is set) | |
 | 402 | `InsufficientCreditError` | |
-| 403 | `RefusalError` when the request is refused under the usage policy; `PermissionDeniedError` otherwise | `category` (`harm` or `self_harm`), `safety` |
+| 403 | `RefusalError` when the request is refused under the usage policy; `PermissionDeniedError` otherwise (`booster_not_enabled`, a suspended workspace) | `category` (`harm` or `self_harm`), `safety` |
 | 404 | `NotFoundError` | |
 | 422 | `ValidationError` | `entries` |
 | 429 | `RateLimitError`; `SessionLimitError` when a key holds as many open sessions as it may | `retryAfter` (seconds) |
-| 529 | `OverloadedError` | `retryAfter` (seconds) |
+| 529 (also `booster_unavailable`) | `OverloadedError` | `retryAfter` (seconds) |
 | other 5xx, a 2xx whose body is not JSON, or a 2xx where the answer of `check`, `classify`, `score` or `number` is missing or malformed | `ServerError` | |
 | any other status (a 3xx, 405, 409, 410, 413, 408 once its retries are used up) | `DecisionNodeError` itself | |
 | an image upload's storage refused the bytes | `DecisionNodeError` itself, `errorType` `upload_failed`, the storage's error code in `reason` | |
@@ -387,6 +448,8 @@ try {
     error_log($e->getMessage() . ' ' . $e->requestId);
 }
 ```
+
+A booster the API does not offer is a `BadRequestError` with `errorType` `booster_unknown`, and a booster with no image to read (or naming an image the request does not have) `booster_input_mismatch`; a malformed `$boosters` list is `api_usage_error` with the reason in `reason`. Every error of a request that named boosters carries `boosters`: how each booster ended, from the `x-decisionnode-boosters` header, by name in the request's order (`['age' => ['status' => 'timeout', 'latency_ms' => 800]]`), so you can see which required booster failed.
 
 The SDK checks every fixed rule the API documents before sending, so the server never sees a request the client could have refused and a fault costs no round trip. A local error has the class, `errorType` and message the server would answer with, and no `status` or `requestId`:
 
@@ -454,7 +517,7 @@ $d->raw['safety'];   // the same scores, from the body
 | `uploadTimeout` | | `60.0` seconds for one storage `PUT` of an image upload; above 0 |
 | `clock` | | the system clock: a `Closure` returning the Unix time in seconds, which upload URLs and cached uploads are judged by (for tests) |
 
-An argument wins over the environment, which wins over the default. An empty string counts as not given, for the client's arguments and for the `$model` of a call. A base URL that is not `https`, from an argument or from the environment, throws `InvalidArgumentException` when the client is made, so the API key never travels unencrypted; plain `http` is accepted only for this machine (`localhost`, `127.0.0.1`, `::1`), for a local test server. Pin a model per client or per call with `decisionnode-1.0` or `decisionnode-1.0-flash`; `decisionnode-latest` and `decisionnode-flash-latest` follow the newest release.
+An argument wins over the environment, which wins over the default. An empty string counts as not given, for the client's arguments and for the `$model` of a call. A base URL that is not `https`, from an argument or from the environment, throws `InvalidArgumentException` when the client is made, so the API key never travels unencrypted; plain `http` is accepted only for this machine (`localhost`, `127.0.0.1`, `::1`), for a local test server. Pin a model per client or per call with `decisionnode-1.0` or `decisionnode-1.0-flash`; `decisionnode-latest` and `decisionnode-flash-latest` follow the newest release. A [fine-tuned model](#fine-tuned-models) of yours goes in `model` too.
 
 ```php
 $dn = new DecisionNode(
@@ -495,7 +558,7 @@ composer test          # unit tests
 composer analyse       # static analysis
 ```
 
-The conformance tests run the language-neutral DecisionNode conformance cases (suite 1.10) against their mock server, every case once through the blocking methods and once through their `Async` forms (sessions are blocking in both runs): set `DECISIONNODE_CONFORMANCE_DIR` to the suite's directory and run `composer conformance`. Without that variable the conformance tests fail; they never skip. CI checks the suite out at a pinned commit, set once as `CONFORMANCE_REF` in `.github/workflows/ci.yml`, and every action in the workflow is pinned to a commit SHA.
+The conformance tests run the language-neutral DecisionNode conformance cases (suite 1.11) against their mock server, every case once through the blocking methods and once through their `Async` forms (sessions are blocking in both runs): set `DECISIONNODE_CONFORMANCE_DIR` to the suite's directory and run `composer conformance`. Without that variable the conformance tests fail; they never skip. CI checks the suite out at a pinned commit, set once as `CONFORMANCE_REF` in `.github/workflows/ci.yml`, and every action in the workflow is pinned to a commit SHA.
 
 ## License
 

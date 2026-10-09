@@ -11,6 +11,10 @@ namespace Bynn\DecisionNode;
  * `$decision->answers['route']`. Every number is the value the API sent, with
  * no rounding or renormalising. `warnings` holds what the API said about the
  * request, such as a video it read at a lower rate or resolution than asked.
+ * `evidence` holds what each booster the request named read, by booster name
+ * in the request's order; null when the request named none. `model` is the
+ * model that answered; for a fine-tuned model, its name pinned to the version
+ * that answered (`decisionnode-1.0-flash@acme/fraud:3`).
  *
  * @implements \ArrayAccess<array-key, Answer>
  * @implements \IteratorAggregate<array-key, Answer>
@@ -21,6 +25,7 @@ final class Decision implements DecisionResult, \ArrayAccess, \Countable, \Itera
      * @param array<array-key, Answer> $answers  by question id
      * @param array<array-key, mixed>  $raw      the parsed response body
      * @param list<string>             $warnings as the API sent them; empty when it sent none
+     * @param array<string, Evidence>|null $evidence by booster name; null when the request named no boosters
      */
     public function __construct(
         public readonly array $answers,
@@ -31,6 +36,7 @@ final class Decision implements DecisionResult, \ArrayAccess, \Countable, \Itera
         public readonly ?Safety $safety,
         public readonly array $raw,
         public readonly array $warnings = [],
+        public readonly ?array $evidence = null,
     ) {
     }
 
@@ -77,13 +83,34 @@ final class Decision implements DecisionResult, \ArrayAccess, \Countable, \Itera
                 is_int($usage['output_tokens'] ?? null) ? $usage['output_tokens'] : null,
                 is_int($usage['video_frames'] ?? null) ? $usage['video_frames'] : null,
                 is_int($seconds) || is_float($seconds) ? $seconds : null,
+                is_int($usage['booster_tokens'] ?? null) ? $usage['booster_tokens'] : null,
+                is_int($usage['boosters'] ?? null) ? $usage['boosters'] : null,
             ),
             requestId: $headers['x-request-id'] ?? null,
             latencyMs: $latency,
             safety: Safety::fromHeader($headers['x-decisionnode-safety'] ?? null),
             raw: $body,
             warnings: $warnings,
+            evidence: self::evidence($body['evidence'] ?? null),
         );
+    }
+
+    /**
+     * The body's evidence by booster name, or null when it has none.
+     *
+     * @return array<string, Evidence>|null
+     */
+    private static function evidence(mixed $evidence): ?array
+    {
+        if (!is_array($evidence) || ($evidence !== [] && array_is_list($evidence))) {
+            return null;
+        }
+        $out = [];
+        foreach ($evidence as $name => $entry) {
+            $out[(string) $name] = Evidence::fromArray((string) $name, is_array($entry) ? $entry : []);
+        }
+
+        return $out;
     }
 
     public function offsetExists(mixed $offset): bool

@@ -17,6 +17,9 @@ final class Compare
 {
     private const EXACT = ['probabilities', 'legend', 'raw', 'entries', 'safety', 'body', 'limits'];
 
+    /** Maps compared whole and in their order: a decision's evidence, an error's boosters. */
+    private const ORDERED = ['evidence', 'boosters'];
+
     public static function same(mixed $expected, mixed $actual): bool
     {
         if (is_bool($expected) || is_bool($actual)) {
@@ -84,7 +87,13 @@ final class Compare
                     if (!array_key_exists($key, $have)) {
                         throw new Fail(sprintf('%s.%s: missing (expected %s)', $path, $key, self::show($value)));
                     }
-                    if (in_array((string) $key, self::EXACT, true)) {
+                    if (in_array((string) $key, self::ORDERED, true) && $value instanceof \stdClass) {
+                        $order = self::map($have[$key]);
+                        if (!self::same($value, $have[$key]) || $order === null
+                            || array_map('strval', array_keys(get_object_vars($value))) !== array_map('strval', array_keys($order))) {
+                            throw new Fail(sprintf('%s.%s: expected %s in this order, got %s', $path, $key, self::show($value), self::show($have[$key])));
+                        }
+                    } elseif (in_array((string) $key, self::EXACT, true)) {
                         if (!self::same($value, $have[$key])) {
                             throw new Fail(sprintf('%s.%s: expected %s, got %s', $path, $key, self::show($value), self::show($have[$key])));
                         }

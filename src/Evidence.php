@@ -1,0 +1,55 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Bynn\DecisionNode;
+
+/**
+ * What one booster read for a request.
+ *
+ * `status` is `ok`, `timeout` (no answer within the booster's time), `error`
+ * or `skipped` (none of the request's images is one it reads), or any other
+ * value as the API sent it. `results` holds one reading per image read, empty
+ * unless `status` is `ok`: an {@see AgeReading}, an {@see AiGeneratedReading},
+ * or an {@see UnknownReading} for a booster this version does not know or a
+ * reading with a field missing or of the wrong type.
+ */
+final class Evidence
+{
+    /**
+     * @param list<Reading>           $results
+     * @param array<array-key, mixed> $raw     the evidence exactly as the API sent it
+     */
+    public function __construct(
+        public readonly string $booster,
+        public readonly ?string $version,
+        public readonly ?string $status,
+        public readonly int|float|null $latencyMs,
+        public readonly array $results,
+        public readonly array $raw,
+    ) {
+    }
+
+    /**
+     * @internal
+     *
+     * @param array<array-key, mixed> $raw
+     */
+    public static function fromArray(string $booster, array $raw): self
+    {
+        $latency = $raw['latency_ms'] ?? null;
+        $results = [];
+        foreach (is_array($raw['results'] ?? null) ? $raw['results'] : [] as $reading) {
+            $results[] = Reading::fromArray($booster, $reading);
+        }
+
+        return new self(
+            booster: $booster,
+            version: is_string($raw['version'] ?? null) ? $raw['version'] : null,
+            status: is_string($raw['status'] ?? null) ? $raw['status'] : null,
+            latencyMs: is_int($latency) || is_float($latency) ? $latency : null,
+            results: $results,
+            raw: $raw,
+        );
+    }
+}

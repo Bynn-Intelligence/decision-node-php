@@ -62,6 +62,7 @@ final class Errors
             'reason' => $headers['x-decisionnode-error'] ?? null,
             'body' => $body ?? $text,
             'headers' => $headers,
+            'boosters' => self::boosters($headers['x-decisionnode-boosters'] ?? null),
         ];
 
         if ($status === 400) {
@@ -107,6 +108,32 @@ final class Errors
         // Every other status, 3xx included (redirects are never followed): the
         // base class with the status.
         return new DecisionNodeError(...$fields);
+    }
+
+    /**
+     * The `x-decisionnode-boosters` header (`age=ok:212,ai_generated=timeout:800`)
+     * by booster name, in the header's order; empty when it is absent.
+     *
+     * @return array<string, array{status: string, latency_ms: int|float|null}>
+     */
+    public static function boosters(?string $header): array
+    {
+        $out = [];
+        foreach (explode(',', $header ?? '') as $member) {
+            $member = trim($member);
+            if ($member === '') {
+                continue;
+            }
+            [$name, $value] = array_pad(explode('=', $member, 2), 2, '');
+            $parts = explode(':', trim($value), 2);
+            $latency = isset($parts[1]) ? trim($parts[1]) : '';
+            $out[trim($name)] = [
+                'status' => trim($parts[0]),
+                'latency_ms' => is_numeric($latency) ? $latency + 0 : null,
+            ];
+        }
+
+        return $out;
     }
 
     /**

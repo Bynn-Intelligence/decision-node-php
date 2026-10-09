@@ -2,6 +2,23 @@
 
 All notable changes to this package are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the package uses [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - Unreleased
+
+Implements version 1.3 of the DecisionNode SDK specification (`SPEC_VERSION` `"1.3"`): boosters and fine-tuned models.
+
+### Added
+
+- Boosters: `decide`, `check`, `classify`, `score`, `number`, `gate` (and their `Async` forms), `decideMany`, `BatchRequest` and `checkRequest` take `boosters`, up to 4 in order: a name (`Booster::AGE`, `Booster::AI_GENERATED`, or any string), a `Booster` (`name`, `images`, `require`, `options`, each left out of the request when not given) or a booster in its wire form. Without boosters the request body is unchanged. Nothing about boosters is checked locally except the API's nesting limit, which counts them. Sessions take no boosters.
+- `Decision::$evidence`, by booster name in the request's order: `Evidence` with `version`, `status`, `latencyMs` and `results`, each result an `AgeReading`, an `AiGeneratedReading` or, for a booster this version does not know or a reading with a field missing or of the wrong type, an `UnknownReading` with its raw fields. `null` when the request named no boosters.
+- `Usage::$boosterTokens` and `Usage::$boosters`, `null` for a request without boosters.
+- `DecisionNodeError::$boosters` on every error: the `x-decisionnode-boosters` header by booster name, in the request's order, each `['status' => ..., 'latency_ms' => ...]`, so a caller sees which required booster failed.
+- Fine-tuned models: a fine-tuned model's name is sent as given in `model`, and `Decision::$model` carries the version that answered. `ModelInfo` gains `version`, `fineTuned`, `base`, `adapterVersion` and `status`, each null for a catalogue model.
+
+### Changed
+
+- The booster errors map to the existing classes: `booster_unknown` and `booster_input_mismatch` are a `BadRequestError`, `booster_not_enabled` a `PermissionDeniedError`, and `booster_unavailable` an `OverloadedError`, retried like any 529.
+- The conformance tests run suite 1.11.
+
 ## [0.2.0] - Unreleased
 
 Implements version 1.2 of the DecisionNode SDK specification (`SPEC_VERSION` `"1.2"`).

@@ -339,9 +339,9 @@ final class Batches
     {
         $prepared = $this->check($requests, $requireOne);
         $promises = [];
-        foreach ($prepared as [$head, $model, $state, $questions, $images, $videos, $tail]) {
+        foreach ($prepared as [$head, $model, $state, $questions, $images, $videos, $tail, $boosters]) {
             $promises[] = $this->images->wires($images)->then(
-                static fn (array $wires): string => Prepare::body($model, $state, $questions, $wires[0], $videos, $head, $tail) . "\n",
+                static fn (array $wires): string => Prepare::body($model, $state, $questions, $wires[0], $videos, $head, $tail, $boosters) . "\n",
             );
         }
 
@@ -355,7 +355,7 @@ final class Batches
      *
      * @param iterable<BatchRequest|array<string, mixed>|object> $requests
      *
-     * @return list<array{array<string, mixed>, string, mixed, array<string, mixed>, list<mixed>, list<mixed>, array<array-key, mixed>}>
+     * @return list<array{array<string, mixed>, string, mixed, array<string, mixed>, list<mixed>, list<mixed>, array<array-key, mixed>, list<mixed>}>
      *
      * @throws \InvalidArgumentException|BadRequestError|ValidationError
      *
@@ -384,7 +384,7 @@ final class Batches
     private static function arguments(mixed $request, int|string $index): array
     {
         if ($request instanceof BatchRequest) {
-            return ['custom_id' => $request->customId, 'state' => $request->state, 'questions' => $request->questions, 'images' => $request->images, 'videos' => $request->videos, 'model' => $request->model];
+            return ['custom_id' => $request->customId, 'state' => $request->state, 'questions' => $request->questions, 'images' => $request->images, 'videos' => $request->videos, 'model' => $request->model, 'boosters' => $request->boosters];
         }
         if (is_array($request)) {
             $args = $request;
@@ -406,7 +406,7 @@ final class Batches
      *
      * @param array<array-key, mixed> $args
      *
-     * @return array{array<string, mixed>, string, mixed, array<string, mixed>, list<mixed>, list<mixed>, array<array-key, mixed>}
+     * @return array{array<string, mixed>, string, mixed, array<string, mixed>, list<mixed>, list<mixed>, array<array-key, mixed>, list<mixed>}
      */
     private function prepare(array $args): array
     {
@@ -422,12 +422,14 @@ final class Batches
         $questions = Prepare::questions($questions);
         $images = Prepare::images(is_iterable($images) ? $images : null);
         $videos = Prepare::videos(is_iterable($videos) ? $videos : null);
-        LocalChecks::decision($model, $state, $questions, $images, $this->held->limits($model), $videos);
+        $boosters = $args['boosters'] ?? null;
+        $boosters = Prepare::boosters(is_iterable($boosters) ? $boosters : null);
+        LocalChecks::decision($model, $state, $questions, $images, $this->held->limits($model), $videos, $boosters);
 
         $tail = $args;
-        unset($tail['custom_id'], $tail['state'], $tail['questions'], $tail['images'], $tail['videos'], $tail['model']);
+        unset($tail['custom_id'], $tail['state'], $tail['questions'], $tail['images'], $tail['videos'], $tail['model'], $tail['boosters']);
 
-        return [['custom_id' => $args['custom_id']], $model, $state, $questions, $images, $videos, $tail];
+        return [['custom_id' => $args['custom_id']], $model, $state, $questions, $images, $videos, $tail, $boosters];
     }
 
     /**

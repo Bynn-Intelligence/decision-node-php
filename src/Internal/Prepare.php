@@ -75,21 +75,46 @@ final class Prepare
     }
 
     /**
-     * A request's body: model, state and questions, then the images and the videos.
+     * The boosters as a list, in the caller's order. Booster objects are
+     * written in their wire forms when the body is encoded; nothing about
+     * them is checked here.
+     *
+     * @param iterable<mixed>|null $boosters
+     *
+     * @return list<mixed>
+     */
+    public static function boosters(?iterable $boosters): array
+    {
+        $list = [];
+        foreach ($boosters ?? [] as $booster) {
+            $list[] = $booster;
+        }
+
+        return $list;
+    }
+
+    /**
+     * A request's body: model, state and questions, the boosters, then the
+     * images and the videos. No boosters leaves the field out, so the body
+     * is the body of a request without them.
      *
      * @param array<string, mixed> $questions
      * @param list<mixed>          $images    wire forms
      * @param list<mixed>          $videos    Video objects or wire forms
      * @param array<string, mixed> $head      fields that go first (a batch line's custom_id)
      * @param array<string, mixed> $tail      fields that go last
+     * @param list<mixed>          $boosters  names, Booster objects or wire forms
      */
-    public static function body(string $model, mixed $state, array $questions, array $images, array $videos = [], array $head = [], array $tail = []): string
+    public static function body(string $model, mixed $state, array $questions, array $images, array $videos = [], array $head = [], array $tail = [], array $boosters = []): string
     {
         $body = $head + [
             'model' => $model,
             'state' => $state ?? '',
             'questions' => (object) $questions,
         ];
+        if ($boosters !== []) {
+            $body['boosters'] = $boosters;
+        }
         if ($images !== []) {
             $body['images'] = $images;
         }

@@ -4,14 +4,18 @@ declare(strict_types=1);
 
 namespace Bynn\DecisionNode\Tests\Conformance;
 
+use Bynn\DecisionNode\AgeReading;
+use Bynn\DecisionNode\AiGeneratedReading;
 use Bynn\DecisionNode\Answer;
 use Bynn\DecisionNode\Batch;
 use Bynn\DecisionNode\BatchPage;
 use Bynn\DecisionNode\BatchResult;
+use Bynn\DecisionNode\Booster;
 use Bynn\DecisionNode\BoxAnswer;
 use Bynn\DecisionNode\ChoiceAnswer;
 use Bynn\DecisionNode\Decision;
 use Bynn\DecisionNode\DecisionNode;
+use Bynn\DecisionNode\Evidence;
 use Bynn\DecisionNode\Exception\DecisionNodeError;
 use Bynn\DecisionNode\Exception\OverloadedError;
 use Bynn\DecisionNode\Exception\RateLimitError;
@@ -22,6 +26,7 @@ use Bynn\DecisionNode\Image;
 use Bynn\DecisionNode\ModelInfo;
 use Bynn\DecisionNode\NumberAnswer;
 use Bynn\DecisionNode\PointAnswer;
+use Bynn\DecisionNode\Reading;
 use Bynn\DecisionNode\Reply;
 use Bynn\DecisionNode\Safety;
 use Bynn\DecisionNode\ScoreAnswer;
@@ -453,12 +458,23 @@ final class Suite
         } elseif (property_exists($exp, 'answer')) {
             Compare::match($exp->answer, self::answer($result), 'answer');
         } elseif (property_exists($exp, 'models')) {
-            $got = array_map(static fn (ModelInfo $m): array => [
-                'name' => $m->name,
-                'description' => $m->description,
-                'release_date' => $m->releaseDate,
-                'limits' => $m->limits,
-            ], $result);
+            $got = [];
+            foreach ($result as $i => $m) {
+                $entry = [
+                    'name' => $m->name,
+                    'description' => $m->description,
+                    'release_date' => $m->releaseDate,
+                    'limits' => $m->limits,
+                ];
+                // The fine-tuned fields are compared when the case lists them.
+                $listed = $exp->models[$i] ?? new \stdClass();
+                foreach (['fine_tuned' => $m->fineTuned, 'base' => $m->base, 'adapter_version' => $m->adapterVersion, 'status' => $m->status] as $field => $value) {
+                    if (property_exists($listed, $field)) {
+                        $entry[$field] = $value;
+                    }
+                }
+                $got[] = $entry;
+            }
             if (!Compare::same($exp->models, $got)) {
                 throw new Fail('models: expected ' . Compare::show($exp->models) . ', got ' . Compare::show($got));
             }
@@ -1022,6 +1038,16 @@ final class Suite
                         return self::video($a, $ctx);
                     case '$frame':
                         return self::frame($a);
+                    case '$booster':
+                        // Booster(name, images, require, options), each argument passed only when present
+                        $named = ['name' => (string) $a->name];
+                        foreach (['images', 'require', 'options'] as $field) {
+                            if (property_exists($a, $field)) {
+                                $named[$field] = self::decode($a->{$field}, $ctx);
+                            }
+                        }
+
+                        return new Booster(...$named);
                 }
             }
             $out = [];
@@ -1194,12 +1220,35 @@ final class Suite
                 'output_tokens' => $d->usage->outputTokens,
                 'video_frames' => $d->usage->videoFrames,
                 'video_seconds' => $d->usage->videoSeconds,
+                'booster_tokens' => $d->usage->boosterTokens,
+                'boosters' => $d->usage->boosters,
             ],
             'warnings' => $d->warnings,
+            'evidence' => $d->evidence === null ? null : array_map(static fn (Evidence $e): array => [
+                'version' => $e->version,
+                'status' => $e->status,
+                'latency_ms' => $e->latencyMs,
+                'results' => array_map(self::reading(...), $e->results),
+            ], $d->evidence),
             'safety' => self::safety($d->safety),
             'answers' => self::answers($d->answers),
             'raw' => $d->raw,
         ];
+    }
+
+    /**
+     * A reading in the suite's form: its kind and fields, or the raw fields of
+     * a generic reading.
+     *
+     * @return array<string, mixed>
+     */
+    private static function reading(Reading $r): array
+    {
+        return match (true) {
+            $r instanceof AgeReading => ['kind' => 'age', 'image' => $r->image, 'faces' => $r->faces, 'age_years' => $r->ageYears, 'low' => $r->low, 'high' => $r->high, 'confidence' => $r->confidence],
+            $r instanceof AiGeneratedReading => ['kind' => 'ai_generated', 'image' => $r->image, 'generated' => $r->generated, 'confidence' => $r->confidence, 'method' => $r->method, 'top_generator' => $r->topGenerator, 'c2pa_signer' => $r->c2paSigner],
+            default => ['kind' => 'unknown', 'raw' => $r->raw],
+        };
     }
 
     /**
@@ -1383,6 +1432,7 @@ final class Suite
             'safety' => $e instanceof RefusalError ? self::safety($e->safety) : null,
             'entries' => $e instanceof ValidationError ? $e->entries : null,
             'retry_after' => $e instanceof RateLimitError || $e instanceof OverloadedError ? $e->retryAfter : null,
+            'boosters' => $e->boosters,
         ];
     }
 

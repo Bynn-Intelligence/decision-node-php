@@ -65,13 +65,17 @@ final class LocalChecks
      * @param list<mixed>          $images    Image objects or wire maps
      * @param array<string, mixed> $limits    the models list entry the client holds for the model, or []
      * @param list<mixed>          $videos    Video objects or wire maps
+     * @param list<mixed>          $boosters  names, Booster objects or wire forms; only their nesting is checked
      *
      * @throws BadRequestError|ValidationError
      * @throws \InvalidArgumentException for a video that is neither a Video nor a wire map
      */
-    public static function decision(string $model, mixed $state, array $questions, array $images, array $limits, array $videos = []): void
+    public static function decision(string $model, mixed $state, array $questions, array $images, array $limits, array $videos = [], array $boosters = []): void
     {
         $probe = ['model' => $model, 'state' => $state ?? '', 'questions' => (object) $questions];
+        if ($boosters !== []) {
+            $probe['boosters'] = $boosters;
+        }
         if ($images !== []) {
             // Placeholders, so the nesting counts the images without their bytes.
             $probe['images'] = array_fill(0, count($images), ['id' => '']);
