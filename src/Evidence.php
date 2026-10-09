@@ -13,10 +13,12 @@ namespace Bynn\DecisionNode;
  *
  * `status` is `ok`, `timeout` (no answer within the booster's time), `error`
  * or `skipped` (none of the request's images is one it reads), or any other
- * value as the API sent it. `results` holds one reading per image read, empty
- * unless `status` is `ok`: an {@see AgeReading}, an {@see AiGeneratedReading},
- * or an {@see UnknownReading} for a booster this version does not know or a
- * reading with a field missing or of the wrong type.
+ * value as the API sent it. `results` holds one reading per picture the
+ * booster was to read: an {@see AgeReading}, an {@see AiGeneratedReading}, or
+ * an {@see UnknownReading} for a booster this version does not know or a
+ * reading with a field missing or of the wrong type. A picture the booster
+ * did not read (it timed out or failed: `{"image"}`) or could not decode
+ * (`{"image", "readable": false}`) is an UnknownReading, and `status` says why.
  */
 final class Evidence
 {
