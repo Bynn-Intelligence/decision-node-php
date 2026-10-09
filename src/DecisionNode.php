@@ -206,13 +206,16 @@ final class DecisionNode
      *                                                          `...:3` for one version), sent as given
      * @param iterable<string|Booster|array<string, mixed>>|null $boosters up to 4, in order: a booster's name, a Booster
      *                                                          or a wire form; their readings come back in `evidence`
+     * @param bool|null                             $fallback  false: a request for decisionnode-1.0 waits for its own
+     *                                                          model (the 529) rather than be answered by Flash; null
+     *                                                          sends nothing and the API's default applies
      *
      * @throws \InvalidArgumentException for an empty question map or a value that cannot be encoded as JSON
      * @throws BadRequestError|ValidationError for a question, image or video the API would refuse, before anything is sent
      */
-    public function decide(mixed $state = '', iterable|object $questions = [], ?iterable $images = null, ?iterable $videos = null, ?string $model = null, ?iterable $boosters = null): Decision
+    public function decide(mixed $state = '', iterable|object $questions = [], ?iterable $images = null, ?iterable $videos = null, ?string $model = null, ?iterable $boosters = null, ?bool $fallback = null): Decision
     {
-        return $this->decideAsync($state, $questions, $images, $videos, $model, $boosters)->wait();
+        return $this->decideAsync($state, $questions, $images, $videos, $model, $boosters, $fallback)->wait();
     }
 
     /**
@@ -226,11 +229,11 @@ final class DecisionNode
      * @throws \InvalidArgumentException for an empty question map or a value that cannot be encoded as JSON, before anything is sent
      * @throws BadRequestError|ValidationError for a question, image or video the API would refuse, before anything is sent
      */
-    public function decideAsync(mixed $state = '', iterable|object $questions = [], ?iterable $images = null, ?iterable $videos = null, ?string $model = null, ?iterable $boosters = null): PromiseInterface
+    public function decideAsync(mixed $state = '', iterable|object $questions = [], ?iterable $images = null, ?iterable $videos = null, ?string $model = null, ?iterable $boosters = null, ?bool $fallback = null): PromiseInterface
     {
-        [$questions, $images, $videos, $model, $boosters] = $this->checked($state, Prepare::questions($questions), Prepare::images($images), Prepare::videos($videos), $model, Prepare::boosters($boosters));
+        [$questions, $images, $videos, $model, $boosters] = $this->checked($state, Prepare::questions($questions), Prepare::images($images), Prepare::videos($videos), $model, Prepare::boosters($boosters), $fallback);
 
-        return $this->call('/v1/decide', $state, $questions, $images, $videos, $model, $boosters)
+        return $this->call('/v1/decide', $state, $questions, $images, $videos, $model, $boosters, $fallback)
             ->then(static fn (array $result): Decision => self::decision($result));
     }
 
@@ -244,10 +247,12 @@ final class DecisionNode
      *
      * @return array{array<string, mixed>, list<mixed>, list<mixed>, string, list<mixed>}
      */
-    private function checked(mixed $state, array $questions, array $images, array $videos, ?string $model, array $boosters = []): array
+    private function checked(mixed $state, array $questions, array $images, array $videos, ?string $model, array $boosters = [], ?bool $fallback = null): array
     {
         $model = self::nonEmpty($model) ?? $this->model;
         LocalChecks::decision($model, $state, $questions, $images, $this->held->limits($model), $videos, $boosters);
+        // The body as it will go out, before anything is uploaded.
+        LocalChecks::bodySize(strlen(Prepare::body($model, $state, $questions, $this->images->measureWires($images), $videos, boosters: $boosters, fallback: $fallback)));
 
         return [$questions, $images, $videos, $model, $boosters];
     }
@@ -263,23 +268,24 @@ final class DecisionNode
      * @param list<mixed>          $images    checked
      * @param list<mixed>          $videos    checked
      * @param list<mixed>          $boosters  as given
+     * @param bool|null            $fallback  sent only when given
      */
-    private function call(string $path, mixed $state, array $questions, array $images, array $videos, ?string $model, array $boosters = [], bool $again = false): PromiseInterface
+    private function call(string $path, mixed $state, array $questions, array $images, array $videos, ?string $model, array $boosters = [], ?bool $fallback = null, bool $again = false): PromiseInterface
     {
         $model = self::nonEmpty($model) ?? $this->model;
 
         return $this->images->wires($images)->then(
-            function (array $prepared) use ($path, $state, $questions, $images, $videos, $model, $boosters, $again): PromiseInterface {
+            function (array $prepared) use ($path, $state, $questions, $images, $videos, $model, $boosters, $fallback, $again): PromiseInterface {
                 [$wires, $placed] = $prepared;
-                $body = Prepare::body($model, $state, $questions, $wires, $videos, boosters: $boosters);
+                $body = Prepare::body($model, $state, $questions, $wires, $videos, boosters: $boosters, fallback: $fallback);
                 LocalChecks::bodySize(strlen($body));
 
                 return $this->api->request('POST', $path, $body)->otherwise(
-                    function (mixed $reason) use ($path, $state, $questions, $images, $videos, $model, $boosters, $again, $placed): PromiseInterface {
+                    function (mixed $reason) use ($path, $state, $questions, $images, $videos, $model, $boosters, $fallback, $again, $placed): PromiseInterface {
                         if (!$again && $placed !== [] && $reason instanceof BadRequestError && in_array($reason->errorType, self::STALE_UPLOAD, true)) {
                             $this->images->forget($placed);
 
-                            return $this->call($path, $state, $questions, $images, $videos, $model, $boosters, true);
+                            return $this->call($path, $state, $questions, $images, $videos, $model, $boosters, $fallback, true);
                         }
                         throw $reason instanceof \Throwable ? $reason : new DecisionNodeError('The request failed.');
                     },
@@ -310,7 +316,7 @@ final class DecisionNode
      * others. Uploaded images are shared through the client's upload cache.
      *
      * Each request is an array with the keys of {@see decide()}: `state`,
-     * `questions`, `images`, `videos`, `model` and `boosters`.
+     * `questions`, `images`, `videos`, `model`, `boosters` and `fallback`.
      *
      * @param iterable<array<string, mixed>|object> $requests
      *
@@ -346,6 +352,7 @@ final class DecisionNode
             $model = $args['model'] ?? null;
             $state = $args['state'] ?? '';
             $boosters = $args['boosters'] ?? null;
+            $fallback = is_bool($args['fallback'] ?? null) ? $args['fallback'] : null;
             [$questions, $images, $videos, $model, $boosters] = $this->checked(
                 $state,
                 Prepare::questions($args['questions'] ?? []),
@@ -353,8 +360,9 @@ final class DecisionNode
                 Prepare::videos($args['videos'] ?? null),
                 is_string($model) ? $model : null,
                 Prepare::boosters(is_iterable($boosters) ? $boosters : null),
+                $fallback,
             );
-            $prepared[] = [$state, $questions, $images, $videos, $model, $boosters];
+            $prepared[] = [$state, $questions, $images, $videos, $model, $boosters, $fallback];
         }
         if ($prepared === []) {
             return Create::promiseFor([]);
@@ -364,8 +372,8 @@ final class DecisionNode
         // Images are prepared as each request starts, so a later request
         // reuses an upload an earlier one made.
         $promises = (function () use ($prepared): \Generator {
-            foreach ($prepared as $index => [$state, $questions, $images, $videos, $model, $boosters]) {
-                yield $index => $this->call('/v1/decide', $state, $questions, $images, $videos, $model, $boosters)
+            foreach ($prepared as $index => [$state, $questions, $images, $videos, $model, $boosters, $fallback]) {
+                yield $index => $this->call('/v1/decide', $state, $questions, $images, $videos, $model, $boosters, $fallback)
                     ->then(static fn (array $result): Decision => self::decision($result));
             }
         })();
@@ -397,9 +405,9 @@ final class DecisionNode
      * @param iterable<Video|array<string, mixed>>|null $videos
      * @param iterable<string|Booster|array<string, mixed>>|null $boosters
      */
-    public function check(mixed $state = '', mixed $instructions = null, mixed $ifTrue = null, mixed $ifFalse = null, ?iterable $images = null, ?iterable $videos = null, ?string $model = null, ?iterable $boosters = null): TruthAnswer
+    public function check(mixed $state = '', mixed $instructions = null, mixed $ifTrue = null, mixed $ifFalse = null, ?iterable $images = null, ?iterable $videos = null, ?string $model = null, ?iterable $boosters = null, ?bool $fallback = null): TruthAnswer
     {
-        return $this->checkAsync($state, $instructions, $ifTrue, $ifFalse, $images, $videos, $model, $boosters)->wait();
+        return $this->checkAsync($state, $instructions, $ifTrue, $ifFalse, $images, $videos, $model, $boosters, $fallback)->wait();
     }
 
     /**
@@ -409,9 +417,9 @@ final class DecisionNode
      *
      * @return PromiseInterface resolves with a TruthAnswer; rejects with a ServerError when the answer is missing or malformed
      */
-    public function checkAsync(mixed $state = '', mixed $instructions = null, mixed $ifTrue = null, mixed $ifFalse = null, ?iterable $images = null, ?iterable $videos = null, ?string $model = null, ?iterable $boosters = null): PromiseInterface
+    public function checkAsync(mixed $state = '', mixed $instructions = null, mixed $ifTrue = null, mixed $ifFalse = null, ?iterable $images = null, ?iterable $videos = null, ?string $model = null, ?iterable $boosters = null, ?bool $fallback = null): PromiseInterface
     {
-        return $this->single('check', Question::truth($instructions, $ifTrue, $ifFalse), TruthAnswer::class, $state, $images, $videos, $model, $boosters);
+        return $this->single('check', Question::truth($instructions, $ifTrue, $ifFalse), TruthAnswer::class, $state, $images, $videos, $model, $boosters, $fallback);
     }
 
     /**
@@ -423,9 +431,9 @@ final class DecisionNode
      * @param iterable<Video|array<string, mixed>>|null $videos
      * @param iterable<string|Booster|array<string, mixed>>|null $boosters
      */
-    public function classify(mixed $state = '', mixed $instructions = null, iterable|object $options = [], ?iterable $images = null, ?iterable $videos = null, ?string $model = null, ?iterable $boosters = null): ChoiceAnswer
+    public function classify(mixed $state = '', mixed $instructions = null, iterable|object $options = [], ?iterable $images = null, ?iterable $videos = null, ?string $model = null, ?iterable $boosters = null, ?bool $fallback = null): ChoiceAnswer
     {
-        return $this->classifyAsync($state, $instructions, $options, $images, $videos, $model, $boosters)->wait();
+        return $this->classifyAsync($state, $instructions, $options, $images, $videos, $model, $boosters, $fallback)->wait();
     }
 
     /**
@@ -436,9 +444,9 @@ final class DecisionNode
      *
      * @return PromiseInterface resolves with a ChoiceAnswer; rejects with a ServerError when the answer is missing or malformed
      */
-    public function classifyAsync(mixed $state = '', mixed $instructions = null, iterable|object $options = [], ?iterable $images = null, ?iterable $videos = null, ?string $model = null, ?iterable $boosters = null): PromiseInterface
+    public function classifyAsync(mixed $state = '', mixed $instructions = null, iterable|object $options = [], ?iterable $images = null, ?iterable $videos = null, ?string $model = null, ?iterable $boosters = null, ?bool $fallback = null): PromiseInterface
     {
-        return $this->single('classify', Question::choice($instructions, $options), ChoiceAnswer::class, $state, $images, $videos, $model, $boosters);
+        return $this->single('classify', Question::choice($instructions, $options), ChoiceAnswer::class, $state, $images, $videos, $model, $boosters, $fallback);
     }
 
     /**
@@ -450,9 +458,9 @@ final class DecisionNode
      * @param iterable<Video|array<string, mixed>>|null $videos
      * @param iterable<string|Booster|array<string, mixed>>|null $boosters
      */
-    public function score(mixed $state = '', mixed $instructions = null, iterable $levels = [], ?iterable $images = null, ?iterable $videos = null, ?string $model = null, ?iterable $boosters = null): ScoreAnswer
+    public function score(mixed $state = '', mixed $instructions = null, iterable $levels = [], ?iterable $images = null, ?iterable $videos = null, ?string $model = null, ?iterable $boosters = null, ?bool $fallback = null): ScoreAnswer
     {
-        return $this->scoreAsync($state, $instructions, $levels, $images, $videos, $model, $boosters)->wait();
+        return $this->scoreAsync($state, $instructions, $levels, $images, $videos, $model, $boosters, $fallback)->wait();
     }
 
     /**
@@ -463,9 +471,9 @@ final class DecisionNode
      *
      * @return PromiseInterface resolves with a ScoreAnswer; rejects with a ServerError when the answer is missing or malformed
      */
-    public function scoreAsync(mixed $state = '', mixed $instructions = null, iterable $levels = [], ?iterable $images = null, ?iterable $videos = null, ?string $model = null, ?iterable $boosters = null): PromiseInterface
+    public function scoreAsync(mixed $state = '', mixed $instructions = null, iterable $levels = [], ?iterable $images = null, ?iterable $videos = null, ?string $model = null, ?iterable $boosters = null, ?bool $fallback = null): PromiseInterface
     {
-        return $this->single('score', Question::score($instructions, $levels), ScoreAnswer::class, $state, $images, $videos, $model, $boosters);
+        return $this->single('score', Question::score($instructions, $levels), ScoreAnswer::class, $state, $images, $videos, $model, $boosters, $fallback);
     }
 
     /**
@@ -477,9 +485,9 @@ final class DecisionNode
      * @param iterable<Video|array<string, mixed>>|null $videos
      * @param iterable<string|Booster|array<string, mixed>>|null $boosters
      */
-    public function number(mixed $state = '', mixed $instructions = null, int|float|null $min = null, int|float|null $max = null, int|float|null $step = null, ?iterable $images = null, ?iterable $videos = null, ?string $model = null, ?iterable $boosters = null): NumberAnswer
+    public function number(mixed $state = '', mixed $instructions = null, int|float|null $min = null, int|float|null $max = null, int|float|null $step = null, ?iterable $images = null, ?iterable $videos = null, ?string $model = null, ?iterable $boosters = null, ?bool $fallback = null): NumberAnswer
     {
-        return $this->numberAsync($state, $instructions, $min, $max, $step, $images, $videos, $model, $boosters)->wait();
+        return $this->numberAsync($state, $instructions, $min, $max, $step, $images, $videos, $model, $boosters, $fallback)->wait();
     }
 
     /**
@@ -489,9 +497,9 @@ final class DecisionNode
      *
      * @return PromiseInterface resolves with a NumberAnswer; rejects with a ServerError when the answer is missing or malformed
      */
-    public function numberAsync(mixed $state = '', mixed $instructions = null, int|float|null $min = null, int|float|null $max = null, int|float|null $step = null, ?iterable $images = null, ?iterable $videos = null, ?string $model = null, ?iterable $boosters = null): PromiseInterface
+    public function numberAsync(mixed $state = '', mixed $instructions = null, int|float|null $min = null, int|float|null $max = null, int|float|null $step = null, ?iterable $images = null, ?iterable $videos = null, ?string $model = null, ?iterable $boosters = null, ?bool $fallback = null): PromiseInterface
     {
-        return $this->single('number', Question::number($instructions, $min, $max, $step), NumberAnswer::class, $state, $images, $videos, $model, $boosters);
+        return $this->single('number', Question::number($instructions, $min, $max, $step), NumberAnswer::class, $state, $images, $videos, $model, $boosters, $fallback);
     }
 
     /**
@@ -503,9 +511,9 @@ final class DecisionNode
      * @param iterable<Video|array<string, mixed>>|null $videos
      * @param iterable<string|Booster|array<string, mixed>>|null $boosters
      */
-    public function gate(mixed $action, mixed $context = null, ?iterable $images = null, ?iterable $videos = null, ?string $model = null, ?iterable $boosters = null): Decision
+    public function gate(mixed $action, mixed $context = null, ?iterable $images = null, ?iterable $videos = null, ?string $model = null, ?iterable $boosters = null, ?bool $fallback = null): Decision
     {
-        return $this->gateAsync($action, $context, $images, $videos, $model, $boosters)->wait();
+        return $this->gateAsync($action, $context, $images, $videos, $model, $boosters, $fallback)->wait();
     }
 
     /**
@@ -515,14 +523,14 @@ final class DecisionNode
      *
      * @return PromiseInterface resolves with a Decision
      */
-    public function gateAsync(mixed $action, mixed $context = null, ?iterable $images = null, ?iterable $videos = null, ?string $model = null, ?iterable $boosters = null): PromiseInterface
+    public function gateAsync(mixed $action, mixed $context = null, ?iterable $images = null, ?iterable $videos = null, ?string $model = null, ?iterable $boosters = null, ?bool $fallback = null): PromiseInterface
     {
         $state = ['action' => $action];
         if ($context !== null) {
             $state['context'] = $context;
         }
 
-        return $this->decideAsync($state, self::gateQuestions(), $images, $videos, $model, $boosters);
+        return $this->decideAsync($state, self::gateQuestions(), $images, $videos, $model, $boosters, $fallback);
     }
 
     /**
@@ -768,7 +776,7 @@ final class DecisionNode
         $requests = $args['requests'] ?? [];
 
         match (strtolower(str_replace(['_', '.'], '', $method))) {
-            'decide' => $this->checked($args['state'] ?? '', Prepare::questions($questions), Prepare::images($images), Prepare::videos($videos), $model, Prepare::boosters($boosters)),
+            'decide' => $this->checked($args['state'] ?? '', Prepare::questions($questions), Prepare::images($images), Prepare::videos($videos), $model, Prepare::boosters($boosters), is_bool($args['fallback'] ?? null) ? $args['fallback'] : null),
             'opensession' => $this->sessionBody($questions, $args['state'] ?? null, $args['instructions'] ?? null, $model, $args['window'] ?? null, $args['ttlSeconds'] ?? null),
             'batchescreate' => $this->batches->check(is_iterable($requests) ? $requests : []),
             'batchesadd' => $this->batches->check(is_iterable($requests) ? $requests : [], requireOne: true),
@@ -939,11 +947,11 @@ final class DecisionNode
      * @param iterable<mixed>|null $videos
      * @param iterable<mixed>|null $boosters
      */
-    private function single(string $id, Question $question, string $class, mixed $state, ?iterable $images, ?iterable $videos, ?string $model, ?iterable $boosters = null): PromiseInterface
+    private function single(string $id, Question $question, string $class, mixed $state, ?iterable $images, ?iterable $videos, ?string $model, ?iterable $boosters = null, ?bool $fallback = null): PromiseInterface
     {
-        [$questions, $images, $videos, $model, $boosters] = $this->checked($state, Prepare::questions([$id => $question]), Prepare::images($images), Prepare::videos($videos), $model, Prepare::boosters($boosters));
+        [$questions, $images, $videos, $model, $boosters] = $this->checked($state, Prepare::questions([$id => $question]), Prepare::images($images), Prepare::videos($videos), $model, Prepare::boosters($boosters), $fallback);
 
-        return $this->call('/v1/decide', $state, $questions, $images, $videos, $model, $boosters)->then(
+        return $this->call('/v1/decide', $state, $questions, $images, $videos, $model, $boosters, $fallback)->then(
             static function (array $result) use ($id, $class): Answer {
                 $decision = self::decision($result);
                 $answer = $decision->answers[$id] ?? null;

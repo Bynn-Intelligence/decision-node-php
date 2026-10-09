@@ -109,9 +109,6 @@ final class LocalChecks
         self::raise($entries, $deferred);
         $ids = self::images($images, $limits);
         self::videos($videos, $ids);
-        // The body without its images, before any upload: images only add to
-        // it, and the whole body is checked again once they are placed.
-        self::bodySize(strlen(Prepare::body($model, $state, $questions, [], $videos, boosters: $boosters)));
     }
 
     /**

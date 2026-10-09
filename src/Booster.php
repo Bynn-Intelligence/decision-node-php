@@ -15,8 +15,8 @@ namespace Bynn\DecisionNode;
  *     ]);
  *
  * A booster with no settings is named by its name alone, as a string. A
- * booster's wire form (`['booster' => 'age']`) is accepted wherever a Booster
- * is. Names are plain strings, so a booster added to the API later works with
+ * booster's wire form (`['name' => 'age', 'require' => true]`) is accepted
+ * wherever a Booster is. Names are plain strings, so a booster added to the API later works with
  * this version too.
  */
 final class Booster implements \JsonSerializable
@@ -57,14 +57,14 @@ final class Booster implements \JsonSerializable
     }
 
     /**
-     * The booster's wire form: `{booster, images?, require?, options?}`, each
+     * The booster's wire form: `{name, images?, require?, options?}`, each
      * argument left out when not given.
      *
      * @return array<string, mixed>
      */
     public function toArray(): array
     {
-        $wire = ['booster' => $this->name];
+        $wire = ['name' => $this->name];
         if ($this->images !== null) {
             $wire['images'] = $this->images;
         }

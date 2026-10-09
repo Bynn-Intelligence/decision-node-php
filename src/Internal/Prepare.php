@@ -104,8 +104,9 @@ final class Prepare
      * @param array<string, mixed> $head      fields that go first (a batch line's custom_id)
      * @param array<string, mixed> $tail      fields that go last
      * @param list<mixed>          $boosters  names, Booster objects or wire forms
+     * @param bool|null            $fallback  sent only when given
      */
-    public static function body(string $model, mixed $state, array $questions, array $images, array $videos = [], array $head = [], array $tail = [], array $boosters = []): string
+    public static function body(string $model, mixed $state, array $questions, array $images, array $videos = [], array $head = [], array $tail = [], array $boosters = [], ?bool $fallback = null): string
     {
         $body = $head + [
             'model' => $model,
@@ -114,6 +115,9 @@ final class Prepare
         ];
         if ($boosters !== []) {
             $body['boosters'] = $boosters;
+        }
+        if ($fallback !== null) {
+            $body['fallback'] = $fallback;
         }
         if ($images !== []) {
             $body['images'] = $images;

@@ -1224,6 +1224,7 @@ final class Suite
                 'boosters' => $d->usage->boosters,
             ],
             'warnings' => $d->warnings,
+            'fallback' => $d->fallback === null ? null : ['served_model' => $d->fallback->servedModel, 'requested_model' => $d->fallback->requestedModel],
             'evidence' => $d->evidence === null ? null : array_map(static fn (Evidence $e): array => [
                 'version' => $e->version,
                 'status' => $e->status,

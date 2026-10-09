@@ -40,12 +40,12 @@ final class BoosterTest extends TestCase
             new Booster(Booster::AI_GENERATED, images: ['c3d4'], require: true),
             new Booster('objects', options: ['min' => 0.5]),
             new Booster('text', require: false, options: []),
-            ['booster' => 'faces'],
+            ['name' => 'faces'],
         ]);
         self::assertSame(
             '{"model":"decisionnode-1.0-flash@acme/fraud:3","state":"","questions":{"q":{"type":"truth","instructions":"?"}},'
-            . '"boosters":["age",{"booster":"ai_generated","images":["c3d4"],"require":true},{"booster":"objects","options":{"min":0.5}},'
-            . '{"booster":"text","require":false,"options":{}},{"booster":"faces"}]}',
+            . '"boosters":["age",{"name":"ai_generated","images":["c3d4"],"require":true},{"name":"objects","options":{"min":0.5}},'
+            . '{"name":"text","require":false,"options":{}},{"name":"faces"}]}',
             (string) $this->sent()->getBody(),
         );
 
@@ -77,7 +77,7 @@ final class BoosterTest extends TestCase
             ['custom_id' => 'l2', 'questions' => ['q' => truth('?')], 'boosters' => [new Booster('ai_generated', images: ['x'])]],
         ])->wait();
         self::assertStringEndsWith(',"boosters":["age"]}' . "\n", $lines[0]);
-        self::assertStringEndsWith(',"boosters":[{"booster":"ai_generated","images":["x"]}]}' . "\n", $lines[1]);
+        self::assertStringEndsWith(',"boosters":[{"name":"ai_generated","images":["x"]}]}' . "\n", $lines[1]);
         $dn->checkRequest('decide', ['questions' => ['q' => truth('?')], 'boosters' => ['age']]);
     }
 

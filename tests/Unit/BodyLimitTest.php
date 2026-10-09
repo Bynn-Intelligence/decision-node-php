@@ -6,6 +6,7 @@ namespace Bynn\DecisionNode\Tests\Unit;
 
 use Bynn\DecisionNode\BatchRequest;
 use Bynn\DecisionNode\Exception\RequestTooLargeError;
+use Bynn\DecisionNode\Image;
 
 use function Bynn\DecisionNode\truth;
 
@@ -45,6 +46,32 @@ final class BodyLimitTest extends TestCase
             }
         }
         self::assertCount(1, $this->history, 'nothing more was sent');
+    }
+
+    public function testImagesAreMeasuredAsTheyWillBeSentBeforeAnyUpload(): void
+    {
+        $png = (string) file_get_contents(__DIR__ . '/../fixtures/images/3x2.png');
+        foreach ([524_288, 0] as $threshold) {
+            $request = static fn (string $state): array => ['state' => $state, 'questions' => ['q' => truth('?')], 'images' => [Image::fromData('scan', $png)]];
+            // The overhead with the image inline, or named by a 36-character upload id.
+            $dn = $this->client([self::truthBody()], ['inlineThreshold' => $threshold]);
+            $wire = $threshold === 0
+                ? '{"id":"scan","upload_id":"' . str_repeat('u', 36) . '"}'
+                : json_encode(Image::fromData('scan', $png)->toArray(), JSON_UNESCAPED_SLASHES);
+            $overhead = strlen('{"model":"decisionnode-latest","state":"","questions":{"q":{"type":"truth","instructions":"?"}},"images":[' . $wire . ']}');
+            try {
+                $dn->checkRequest('decide', $request(self::stateOf(self::LIMIT - $overhead + 1)));
+                self::fail('one byte over, threshold ' . $threshold);
+            } catch (RequestTooLargeError) {
+            }
+            $dn->checkRequest('decide', $request(self::stateOf(self::LIMIT - $overhead)));
+            self::assertCount(0, $this->history, 'nothing sent or uploaded to measure');
+        }
+    }
+
+    private static function stateOf(int $length): string
+    {
+        return str_repeat('x', $length);
     }
 
     public function testTheApis413IsNotRetried(): void

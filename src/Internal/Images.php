@@ -23,6 +23,9 @@ final class Images
 {
     private const LOOPBACK = ['localhost', '127.0.0.1', '::1'];
 
+    /** The length of an upload id: upl_ and 32 hex digits. */
+    private const UPLOAD_ID_CHARS = 36;
+
     /** @var array<string, PromiseInterface> uploads in flight by cache key, each resolving with its upload id */
     private array $inflight = [];
 
@@ -39,6 +42,41 @@ final class Images
         ?\Closure $clock = null,
     ) {
         $this->clock = $clock ?? static fn (): float => microtime(true);
+    }
+
+    /**
+     * The images' wire forms as wires() would send them, without uploading:
+     * an image it would send by upload id is counted with an upload id's
+     * length. For measuring a body before anything is sent.
+     *
+     * @param list<mixed> $images Image objects or wire maps, already checked
+     *
+     * @return list<mixed>
+     */
+    public function measureWires(array $images): array
+    {
+        $wires = [];
+        $total = 0;
+        $local = [];
+        foreach ($images as $i => $image) {
+            if (!$image instanceof Image) {
+                $wires[$i] = $image;
+            } elseif ($image->data === null) {
+                $wires[$i] = $image->toArray();
+            } else {
+                $total += strlen($image->data);
+                $local[$i] = $image;
+            }
+        }
+        $byId = static fn (Image $image): array => ['id' => $image->id, 'upload_id' => str_repeat('u', self::UPLOAD_ID_CHARS)];
+        foreach ($local as $i => $image) {
+            $key = UploadCache::key((string) $image->data, (string) $image->mediaType);
+            $known = $this->cache->get($key) !== null || isset($this->inflight[$key]);
+            $wires[$i] = $known || $total >= $this->inlineThreshold ? $byId($image) : $image->toArray();
+        }
+        ksort($wires);
+
+        return array_values($wires);
     }
 
     /**

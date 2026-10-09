@@ -116,7 +116,7 @@ Answers are read by question id, `$d['route']` or `$d->answers['route']`. An ans
 
 | Method | Does | Returns |
 |---|---|---|
-| `decide($state, $questions, $images, $videos, $model, $boosters)` | One `POST /v1/decide` | `Decision` |
+| `decide($state, $questions, $images, $videos, $model, $boosters, $fallback)` | One `POST /v1/decide` | `Decision` |
 | `decideMany($requests, $concurrency = 8)` | One decision per request, at most `$concurrency` at a time | A list of `DecisionResult` in input order: each a `Decision` or the `DecisionNodeError` that request ended with |
 | `check($state, $instructions, $ifTrue, $ifFalse)` | One `truth` question | `TruthAnswer`; a `ServerError` when the answer is missing or malformed |
 | `classify($state, $instructions, $options)` | One `choice` question | `ChoiceAnswer`; a `ServerError` when the answer is missing or malformed |
@@ -130,7 +130,7 @@ Answers are read by question id, `$d['route']` or `$d->answers['route']`. An ans
 | `batches->create(...)` and the other batch calls, `runBatch(...)` | The Batch API | `Batch`, `BatchResult` (see [Batches](#batches)) |
 | `decideRaw($body)` | Sends `$body` exactly as given | The response body as an array |
 
-`check`, `classify`, `score`, `number` and `gate` also take `$images`, `$videos`, `$model` and `$boosters`, like `decide`. `$state` is a string or any JSON value; leaving it out sends an empty string. `decideMany` checks every request before it sends any: a `$concurrency` below 1, an argument problem in any one of the requests (an empty question map, say), or a question, image or video the API would refuse throws, and nothing is sent, not even the valid requests.
+`check`, `classify`, `score`, `number` and `gate` also take `$images`, `$videos`, `$model`, `$boosters` and `$fallback`, like `decide`. `$state` is a string or any JSON value; leaving it out sends an empty string. `decideMany` checks every request before it sends any: a `$concurrency` below 1, an argument problem in any one of the requests (an empty question map, say), or a question, image or video the API would refuse throws, and nothing is sent, not even the valid requests.
 
 `gate` sends the state `{"action": ..., "context": ...}` and these three questions, word for word the same in every DecisionNode SDK:
 
@@ -201,7 +201,7 @@ How a local image travels is chosen for the shortest response time:
 - **Larger ones are uploaded once.** At or above that size, the SDK uploads them first, with one `POST /v1/uploads` for all of them and one `PUT` each straight to storage, side by side, then sends the request naming them by upload id. The `PUT` carries only the headers the API returned: never your key, never your custom headers, and no redirect is followed.
 - **An upload is shared and reused.** Requests running side by side with the same image share one upload. The client remembers its uploads by the SHA-256 of the bytes, in memory, for the upload's hour (up to 5 minutes before it expires, at most 256 images). The same image in a later request, a `decideMany`, a session frame or a batch line is sent by its upload id whatever its size, with nothing uploaded again. If the API answers that an upload the SDK placed has expired or was used up, the SDK uploads the image again and sends the request once more.
 
-A request body may be at most 25 MiB (26,214,400 bytes): inline images and video frames count toward it, uploads and URLs do not. A body over it is refused before anything is sent, with a `RequestTooLargeError`. Set `inlineThreshold` on the client to change the threshold (`0` uploads every local image). `upload($images)` uploads whatever the size and returns the upload ids, for a pipeline that wants to upload first and decide later.
+A request body may be at most 25 MiB (26,214,400 bytes): inline images and video frames count toward it, uploads and URLs do not. A body over it is refused before anything is sent or uploaded, with a `RequestTooLargeError`: it is measured as it would go out, an image to upload by its upload id. Set `inlineThreshold` on the client to change the threshold (`0` uploads every local image). `upload($images)` uploads whatever the size and returns the upload ids, for a pipeline that wants to upload first and decide later.
 
 How many large images fit in one request is the model's token limit, which the server checks: a request over it is a `ContextLimitError`.
 
@@ -286,17 +286,14 @@ A booster is a specialist model that reads the request's images before the decis
 | `ai_generated` (`Booster::AI_GENERATED`) | Any picture | `AiGeneratedReading`: `image`, `generated` (the probability that an image generator made it), `confidence`, `method` (`inference`, read from the pixels, or `c2pa`, the file's Content Credentials say so), `topGenerator` (`['name' => ..., 'probability' => ...]`, `null` unless the picture reads as likely generated, and on every `c2pa` reading), `c2paSigner` (who signed the file's Content Credentials, `null` unless they are trusted) and `c2pa` (`untrusted` when the file carries Content Credentials that are not trusted, else `null`) |
 
 ```php
-use Bynn\DecisionNode\{AgeReading, AiGeneratedReading, Booster, Image};
+use Bynn\DecisionNode\{AgeReading, AiGeneratedReading, Image};
 
 $d = $dn->decide(
     images: [
         Image::fromUrl('selfie', 'https://files.example.com/signup/88/selfie.jpg'),
         Image::fromUrl('listing', 'https://files.example.com/listings/4411/photo.jpg'),
     ],
-    boosters: [
-        Booster::AGE,
-        new Booster(Booster::AI_GENERATED, images: ['listing'], require: true),
-    ],
+    boosters: ['age', 'ai_generated'],
     questions: [
         'adult' => truth('Is the person in `selfie` an adult?'),
         'synthetic' => truth('Is `listing` AI-generated?'),
@@ -318,7 +315,15 @@ $d->usage->boosterTokens;  // the readings' share of the input tokens
 $d->usage->boosters;       // the booster calls billed
 ```
 
-`$boosters` takes up to 4 boosters, each at most once, in the order you give: a booster's name as a string, a `Booster`, or a booster in its wire form (`['booster' => 'age']`). Names are plain strings, so a booster added to the API later works with this version too.
+`$boosters` takes up to 4 boosters, each at most once, in the order you give, usually by name (`Booster::AGE` and `Booster::AI_GENERATED` name the two). Names are plain strings, so a booster added to the API later works with this version too. A booster that needs a setting is a `Booster`:
+
+```php
+use Bynn\DecisionNode\Booster;
+
+$boosters = ['age', new Booster('ai_generated', images: ['listing'], require: true)];
+```
+
+It is sent as `{"name": "ai_generated", "images": ["listing"], "require": true}`, and a booster in that wire form (`['name' => 'age', 'require' => true]`) is accepted too.
 
 | `new Booster(...)` argument | Sends |
 |---|---|
@@ -332,6 +337,10 @@ $d->usage->boosters;       // the booster calls billed
 Boosters read images in every form an image takes: URL, inline bytes and upload. Every question sees every reading. The one-question helpers, `gate`, `decideMany`, batch requests and `checkRequest` take boosters as `decide` does; sessions do not. The SDK checks nothing about boosters before sending: which boosters exist and which your workspace may use is the API's to answer, before any booster runs and before any charge. Every booster is on for a new workspace, and an owner or admin can turn one off in the console.
 
 A booster call costs USD 0.002: one call per booster and image read with status `ok`. A picture the same booster read for your workspace in the last hour is not billed again, a booster that timed out or failed is free, and a request the safety check refuses pays for none. The readings' tokens are input tokens at the model's price.
+
+## Fallback
+
+When no worker can take a request for `decisionnode-1.0` at once, the API answers it with `decisionnode-1.0-flash` rather than make it wait. `$d->model` is then the model that answered, and `$d->fallback` says so: a `Fallback` with `servedModel` and `requestedModel`, from the `x-decisionnode-fallback` and `x-decisionnode-requested-model` headers; on an ordinary answer it is `null`. To have such a request wait for its own model instead, pass `fallback: false` (the helpers, `decideMany`'s requests and `BatchRequest` take it too): it then gets the 529, an `OverloadedError` retried like any other. Left out, nothing is sent and the API's default applies.
 
 ## Fine-tuned models
 

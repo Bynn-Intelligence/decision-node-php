@@ -389,7 +389,12 @@ final class Batches
     private static function arguments(mixed $request, int|string $index): array
     {
         if ($request instanceof BatchRequest) {
-            return ['custom_id' => $request->customId, 'state' => $request->state, 'questions' => $request->questions, 'images' => $request->images, 'videos' => $request->videos, 'model' => $request->model, 'boosters' => $request->boosters];
+            $args = ['custom_id' => $request->customId, 'state' => $request->state, 'questions' => $request->questions, 'images' => $request->images, 'videos' => $request->videos, 'model' => $request->model, 'boosters' => $request->boosters];
+            if ($request->fallback !== null) {
+                $args['fallback'] = $request->fallback;
+            }
+
+            return $args;
         }
         if (is_array($request)) {
             $args = $request;
@@ -433,8 +438,11 @@ final class Batches
 
         $tail = $args;
         unset($tail['custom_id'], $tail['state'], $tail['questions'], $tail['images'], $tail['videos'], $tail['model'], $tail['boosters']);
+        $head = ['custom_id' => $args['custom_id']];
+        // The line as it will go out, before anything is uploaded.
+        LocalChecks::bodySize(strlen(Prepare::body($model, $state, $questions, $this->images->measureWires($images), $videos, $head, $tail, $boosters)));
 
-        return [['custom_id' => $args['custom_id']], $model, $state, $questions, $images, $videos, $tail, $boosters];
+        return [$head, $model, $state, $questions, $images, $videos, $tail, $boosters];
     }
 
     /**

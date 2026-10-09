@@ -14,7 +14,10 @@ namespace Bynn\DecisionNode;
  * `evidence` holds what each booster the request named read, by booster name
  * in the request's order; null when the request named none. `model` is the
  * model that answered; for a fine-tuned model, its name pinned to the version
- * that answered (`decisionnode-1.0-flash@acme/fraud:3`).
+ * that answered (`decisionnode-1.0-flash@acme/fraud:3`). `fallback` says that
+ * the API answered a request for one model with another (Flash for
+ * `decisionnode-1.0` when no worker could take it at once); null on an
+ * ordinary answer.
  *
  * @implements \ArrayAccess<array-key, Answer>
  * @implements \IteratorAggregate<array-key, Answer>
@@ -37,6 +40,7 @@ final class Decision implements DecisionResult, \ArrayAccess, \Countable, \Itera
         public readonly array $raw,
         public readonly array $warnings = [],
         public readonly ?array $evidence = null,
+        public readonly ?Fallback $fallback = null,
     ) {
     }
 
@@ -92,6 +96,7 @@ final class Decision implements DecisionResult, \ArrayAccess, \Countable, \Itera
             raw: $body,
             warnings: $warnings,
             evidence: self::evidence($body['evidence'] ?? null),
+            fallback: Fallback::fromHeaders($headers),
         );
     }
 
