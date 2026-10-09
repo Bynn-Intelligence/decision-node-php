@@ -1246,7 +1246,7 @@ final class Suite
     {
         return match (true) {
             $r instanceof AgeReading => ['kind' => 'age', 'image' => $r->image, 'faces' => $r->faces, 'age_years' => $r->ageYears, 'low' => $r->low, 'high' => $r->high, 'confidence' => $r->confidence],
-            $r instanceof AiGeneratedReading => ['kind' => 'ai_generated', 'image' => $r->image, 'generated' => $r->generated, 'confidence' => $r->confidence, 'method' => $r->method, 'top_generator' => $r->topGenerator, 'c2pa_signer' => $r->c2paSigner],
+            $r instanceof AiGeneratedReading => ['kind' => 'ai_generated', 'image' => $r->image, 'generated' => $r->generated, 'confidence' => $r->confidence, 'method' => $r->method, 'top_generator' => $r->topGenerator, 'c2pa_signer' => $r->c2paSigner, 'c2pa' => $r->c2pa],
             default => ['kind' => 'unknown', 'raw' => $r->raw],
         };
     }

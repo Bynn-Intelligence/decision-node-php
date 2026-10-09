@@ -26,6 +26,7 @@ final class BoosterTest extends TestCase
         'ai_generated' => ['version' => 'ai_generated-v2', 'status' => 'ok', 'latency_ms' => 340, 'results' => [
             ['image' => 'c3d4', 'generated' => 0.93, 'confidence' => 0.86, 'method' => 'inference', 'top_generator' => ['name' => 'Generator A', 'probability' => 0.71], 'c2pa_signer' => null],
             ['image' => 'e5f6', 'generated' => 0.99, 'confidence' => 0.99, 'method' => 'c2pa', 'top_generator' => null, 'c2pa_signer' => 'Example Camera Co.'],
+            ['image' => 'g7h8', 'generated' => 0.04, 'confidence' => 0.9, 'method' => 'inference', 'top_generator' => null, 'c2pa_signer' => null, 'c2pa' => 'untrusted', 'region' => ['x' => 4]],
         ]],
         'faces' => ['version' => 'faces-v1', 'status' => 'ok', 'latency_ms' => 90, 'results' => [['image' => 'a1b2', 'count' => 1]]],
         'text' => ['version' => 'text-v1', 'status' => 'timeout', 'latency_ms' => 800, 'results' => []],
@@ -122,7 +123,9 @@ final class BoosterTest extends TestCase
         self::assertInstanceOf(AgeReading::class, $none);
         self::assertSame([0, null, null], [$none->faces, $none->ageYears, $none->confidence]);
 
-        [$inference, $c2pa] = $d->evidence['ai_generated']->results;
+        [$inference, $c2pa, $untrusted] = $d->evidence['ai_generated']->results;
+        self::assertInstanceOf(AiGeneratedReading::class, $untrusted);
+        self::assertSame(['untrusted', null, null], [$untrusted->c2pa, $untrusted->topGenerator, $untrusted->c2paSigner]);
         self::assertInstanceOf(AiGeneratedReading::class, $inference);
         self::assertSame([0.93, 'inference', ['name' => 'Generator A', 'probability' => 0.71], null], [$inference->generated, $inference->method, $inference->topGenerator, $inference->c2paSigner]);
         self::assertInstanceOf(AiGeneratedReading::class, $c2pa);
@@ -155,7 +158,11 @@ final class BoosterTest extends TestCase
             'ai_generated' => [
                 ['image' => 'a', 'generated' => 0.9, 'confidence' => 0.9],
                 ['image' => 'a', 'generated' => 0.9, 'confidence' => 0.9, 'method' => 'inference', 'top_generator' => ['name' => 'x']],
-                ['image' => 'a', 'generated' => 0.9, 'confidence' => 0.9, 'method' => 'c2pa', 'c2pa_signer' => 7],
+                ['image' => 'a', 'generated' => 0.9, 'confidence' => 0.9, 'method' => 'c2pa', 'top_generator' => null, 'c2pa_signer' => 7],
+                ['image' => 'a', 'generated' => 0.9, 'confidence' => 0.9, 'method' => 'inference', 'c2pa_signer' => null],
+                ['image' => 'a', 'generated' => 0.9, 'confidence' => 0.9, 'method' => 'inference', 'top_generator' => null],
+                ['image' => 'a', 'generated' => 0.9, 'confidence' => 0.9, 'method' => 'inference', 'top_generator' => 'x', 'c2pa_signer' => null],
+                ['image' => 'a', 'generated' => 0.9, 'confidence' => 0.9, 'method' => 'inference', 'top_generator' => null, 'c2pa_signer' => null, 'c2pa' => true],
             ],
         ];
         foreach ($readings as $booster => $list) {

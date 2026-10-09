@@ -11,9 +11,12 @@ namespace Bynn\DecisionNode;
  * picture, and `confidence` 0 to 1. `method` is `inference` (read from the
  * pixels), `c2pa` (the file's Content Credentials say so), or any other value
  * as the API sent it. `topGenerator` is the likeliest generator,
- * `['name' => ..., 'probability' => ...]`, or null when the API sent none.
- * `c2paSigner` is who signed the file's Content Credentials, or null when it
- * has none.
+ * `['name' => ..., 'probability' => ...]`, null unless the picture reads as
+ * likely generated and on every `c2pa` reading. `c2paSigner` is who signed
+ * the file's Content Credentials, null unless they are trusted; `c2pa` is
+ * `untrusted` when the file carries Content Credentials that are not trusted
+ * (any other value kept as the API sent it), else null. Fields this version
+ * does not know are ignored.
  */
 final class AiGeneratedReading extends Reading
 {
@@ -28,6 +31,8 @@ final class AiGeneratedReading extends Reading
 
     public readonly ?string $c2paSigner;
 
+    public readonly ?string $c2pa;
+
     /**
      * @internal
      *
@@ -39,13 +44,17 @@ final class AiGeneratedReading extends Reading
             || !self::isNumber($raw['generated'] ?? null) || !self::isNumber($raw['confidence'] ?? null)) {
             return false;
         }
-        $top = $raw['top_generator'] ?? null;
+        // The API always writes top_generator and c2pa_signer, null or not.
+        if (!array_key_exists('top_generator', $raw) || !array_key_exists('c2pa_signer', $raw)) {
+            return false;
+        }
+        $top = $raw['top_generator'];
         if ($top !== null && (!is_array($top) || !is_string($top['name'] ?? null) || !self::isNumber($top['probability'] ?? null))) {
             return false;
         }
-        $signer = $raw['c2pa_signer'] ?? null;
+        $c2pa = $raw['c2pa'] ?? null;
 
-        return $signer === null || is_string($signer);
+        return ($raw['c2pa_signer'] === null || is_string($raw['c2pa_signer'])) && ($c2pa === null || is_string($c2pa));
     }
 
     /**
@@ -62,5 +71,6 @@ final class AiGeneratedReading extends Reading
             ? ['name' => $top['name'], 'probability' => $top['probability']]
             : null;
         $this->c2paSigner = is_string($raw['c2pa_signer'] ?? null) ? $raw['c2pa_signer'] : null;
+        $this->c2pa = is_string($raw['c2pa'] ?? null) ? $raw['c2pa'] : null;
     }
 }
