@@ -19,7 +19,7 @@ use function Bynn\DecisionNode\truth;
 final class BoosterTest extends TestCase
 {
     private const EVIDENCE = [
-        'age' => ['version' => 'age-v3', 'status' => 'ok', 'latency_ms' => 212, 'results' => [
+        'age' => ['version' => 'age-v3', 'status' => 'ok', 'latency_ms' => 212, 'billed_calls' => 2, 'results' => [
             ['image' => 'a1b2', 'age_years' => 27, 'low' => 22, 'high' => 33, 'confidence' => 0.81, 'faces' => 1],
             ['image' => 'c3d4', 'faces' => 0],
         ]],
@@ -41,11 +41,12 @@ final class BoosterTest extends TestCase
             new Booster('objects', options: ['min' => 0.5]),
             new Booster('text', require: false, options: []),
             ['name' => 'faces'],
+            new Booster('objects_v2'),
         ]);
         self::assertSame(
             '{"model":"decisionnode-1.0-flash@acme/fraud:3","state":"","questions":{"q":{"type":"truth","instructions":"?"}},'
             . '"boosters":["age",{"name":"ai_generated","images":["c3d4"],"require":true},{"name":"objects","options":{"min":0.5}},'
-            . '{"name":"text","require":false,"options":{}},{"name":"faces"}]}',
+            . '{"name":"text","require":false,"options":{}},{"name":"faces"},"objects_v2"]}',
             (string) $this->sent()->getBody(),
         );
 
@@ -115,7 +116,8 @@ final class BoosterTest extends TestCase
         self::assertNotNull($d->evidence);
         self::assertSame(['age', 'ai_generated', 'faces', 'text'], array_keys($d->evidence));
         $age = $d->evidence['age'];
-        self::assertSame(['age-v3', 'ok', 212], [$age->version, $age->status, $age->latencyMs]);
+        self::assertSame(['age-v3', 'ok', 212, 2], [$age->version, $age->status, $age->latencyMs, $age->billedCalls]);
+        self::assertNull($d->evidence['text']->billedCalls);
         $read = $age->results[0];
         self::assertInstanceOf(AgeReading::class, $read);
         self::assertSame(['a1b2', 1, 27, 22, 33, 0.81], [$read->image, $read->faces, $read->ageYears, $read->low, $read->high, $read->confidence]);

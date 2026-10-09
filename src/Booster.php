@@ -14,9 +14,9 @@ namespace Bynn\DecisionNode;
  *         new Booster(Booster::AI_GENERATED, images: ['listing'], require: true),
  *     ]);
  *
- * A booster with no settings is named by its name alone, as a string. A
- * booster's wire form (`['name' => 'age', 'require' => true]`) is accepted
- * wherever a Booster is. Names are plain strings, so a booster added to the API later works with
+ * A booster with no settings is named by its name alone, as a string; a
+ * Booster with no option set is sent the same way. A booster's wire form
+ * (`['name' => 'age', 'require' => true]`) is accepted wherever a Booster is. Names are plain strings, so a booster added to the API later works with
  * this version too.
  */
 final class Booster implements \JsonSerializable
@@ -80,10 +80,17 @@ final class Booster implements \JsonSerializable
     }
 
     /**
-     * @return array<string, mixed>
+     * The booster as sent: its bare name when no option is set, else
+     * {@see toArray()}.
+     *
+     * @return string|array<string, mixed>
      */
-    public function jsonSerialize(): array
+    public function jsonSerialize(): string|array
     {
+        if ($this->images === null && $this->require === null && $this->options === null) {
+            return $this->name;
+        }
+
         return $this->toArray();
     }
 }

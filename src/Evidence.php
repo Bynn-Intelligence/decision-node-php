@@ -7,6 +7,10 @@ namespace Bynn\DecisionNode;
 /**
  * What one booster read for a request.
  *
+ * `billedCalls` is the calls of that booster billed on this request: one per
+ * image read with status `ok`, 0 for a picture read in the last hour or a
+ * booster that timed out; null when the API sent none.
+ *
  * `status` is `ok`, `timeout` (no answer within the booster's time), `error`
  * or `skipped` (none of the request's images is one it reads), or any other
  * value as the API sent it. `results` holds one reading per image read, empty
@@ -27,6 +31,7 @@ final class Evidence
         public readonly int|float|null $latencyMs,
         public readonly array $results,
         public readonly array $raw,
+        public readonly ?int $billedCalls = null,
     ) {
     }
 
@@ -50,6 +55,7 @@ final class Evidence
             latencyMs: is_int($latency) || is_float($latency) ? $latency : null,
             results: $results,
             raw: $raw,
+            billedCalls: is_int($raw['billed_calls'] ?? null) ? $raw['billed_calls'] : null,
         );
     }
 }

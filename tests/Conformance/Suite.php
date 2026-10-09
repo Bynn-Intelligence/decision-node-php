@@ -1229,6 +1229,7 @@ final class Suite
                 'version' => $e->version,
                 'status' => $e->status,
                 'latency_ms' => $e->latencyMs,
+                'billed_calls' => $e->billedCalls,
                 'results' => array_map(self::reading(...), $e->results),
             ], $d->evidence),
             'safety' => self::safety($d->safety),
