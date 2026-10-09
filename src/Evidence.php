@@ -8,8 +8,8 @@ namespace Bynn\DecisionNode;
  * What one booster read for a request.
  *
  * `billedCalls` is the calls of that booster billed on this request: one per
- * image read with status `ok`, 0 for a picture read in the last hour or a
- * booster that timed out; null when the API sent none.
+ * image read with status `ok`, 0 for a booster that timed out or failed; null
+ * when the API sent none.
  *
  * `status` is `ok`, `timeout` (no answer within the booster's time), `error`
  * or `skipped` (none of the request's images is one it reads), or any other
