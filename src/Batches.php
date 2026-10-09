@@ -341,7 +341,12 @@ final class Batches
         $promises = [];
         foreach ($prepared as [$head, $model, $state, $questions, $images, $videos, $tail, $boosters]) {
             $promises[] = $this->images->wires($images)->then(
-                static fn (array $wires): string => Prepare::body($model, $state, $questions, $wires[0], $videos, $head, $tail, $boosters) . "\n",
+                static function (array $wires) use ($model, $state, $questions, $videos, $head, $tail, $boosters): string {
+                    $line = Prepare::body($model, $state, $questions, $wires[0], $videos, $head, $tail, $boosters);
+                    LocalChecks::bodySize(strlen($line));
+
+                    return $line . "\n";
+                },
             );
         }
 

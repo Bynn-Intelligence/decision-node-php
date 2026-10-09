@@ -14,6 +14,8 @@ Implements version 1.3 of the DecisionNode SDK specification (`SPEC_VERSION` `"1
 - `DecisionNodeError::$boosters` on every error: the `x-decisionnode-boosters` header by booster name, in the request's order, each `['status' => ..., 'latency_ms' => ...]`, so a caller sees which required booster failed.
 - Fine-tuned models: a fine-tuned model's name is sent as given in `model`, and `Decision::$model` carries the version that answered. `ModelInfo` gains `version`, `fineTuned`, `base`, `adapterVersion` and `status`, each null for a catalogue model.
 
+- The API's 25 MiB body limit: `RequestTooLargeError`. A request body, or a batch line, over 26,214,400 bytes is refused before anything is sent, and the API's 413 is the same error, never retried. Inline images and video frames count toward it; uploaded images and URLs do not, and local images at or above the inline threshold are uploaded.
+
 ### Changed
 
 - The booster errors map to the existing classes: `booster_unknown` and `booster_input_mismatch` are a `BadRequestError`, `booster_not_enabled` a `PermissionDeniedError`, and `booster_unavailable` an `OverloadedError`, retried like any 529.

@@ -6,6 +6,10 @@
          cacheDirectory=".phpunit.cache"
          failOnWarning="true"
          failOnRisky="true">
+    <php>
+        <!-- The body limit cases send and read back bodies of 25 MiB. -->
+        <ini name="memory_limit" value="1G"/>
+    </php>
     <testsuites>
         <testsuite name="unit">
             <directory>tests/Unit</directory>

@@ -272,6 +272,7 @@ final class DecisionNode
             function (array $prepared) use ($path, $state, $questions, $images, $videos, $model, $boosters, $again): PromiseInterface {
                 [$wires, $placed] = $prepared;
                 $body = Prepare::body($model, $state, $questions, $wires, $videos, boosters: $boosters);
+                LocalChecks::bodySize(strlen($body));
 
                 return $this->api->request('POST', $path, $body)->otherwise(
                     function (mixed $reason) use ($path, $state, $questions, $images, $videos, $model, $boosters, $again, $placed): PromiseInterface {

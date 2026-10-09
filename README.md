@@ -201,7 +201,7 @@ How a local image travels is chosen for the shortest response time:
 - **Larger ones are uploaded once.** At or above that size, the SDK uploads them first, with one `POST /v1/uploads` for all of them and one `PUT` each straight to storage, side by side, then sends the request naming them by upload id. The `PUT` carries only the headers the API returned: never your key, never your custom headers, and no redirect is followed.
 - **An upload is shared and reused.** Requests running side by side with the same image share one upload. The client remembers its uploads by the SHA-256 of the bytes, in memory, for the upload's hour (up to 5 minutes before it expires, at most 256 images). The same image in a later request, a `decideMany`, a session frame or a batch line is sent by its upload id whatever its size, with nothing uploaded again. If the API answers that an upload the SDK placed has expired or was used up, the SDK uploads the image again and sends the request once more.
 
-Set `inlineThreshold` on the client to change the threshold (`0` uploads every local image). `upload($images)` uploads whatever the size and returns the upload ids, for a pipeline that wants to upload first and decide later.
+A request body may be at most 25 MiB (26,214,400 bytes): inline images and video frames count toward it, uploads and URLs do not. A body over it is refused before anything is sent, with a `RequestTooLargeError`. Set `inlineThreshold` on the client to change the threshold (`0` uploads every local image). `upload($images)` uploads whatever the size and returns the upload ids, for a pipeline that wants to upload first and decide later.
 
 How many large images fit in one request is the model's token limit, which the server checks: a request over it is a `ContextLimitError`.
 
@@ -427,6 +427,7 @@ Only a 2xx response with a JSON body is a success. Redirects are never followed,
 | 402 | `InsufficientCreditError` | |
 | 403 | `RefusalError` when the request is refused under the usage policy; `PermissionDeniedError` otherwise (`booster_not_enabled`, a suspended workspace) | `category` (`harm` or `self_harm`), `safety` |
 | 404 | `NotFoundError` | |
+| 413 | `RequestTooLargeError`, never retried | |
 | 422 | `ValidationError` | `entries` |
 | 429 | `RateLimitError`; `SessionLimitError` when a key holds as many open sessions as it may | `retryAfter` (seconds) |
 | 529 (also `booster_unavailable`) | `OverloadedError` | `retryAfter` (seconds) |
@@ -457,6 +458,7 @@ The SDK checks every fixed rule the API documents before sending, so the server 
 |---|---|
 | A choice with no options or more than 255, a score with more than 10 levels, a truth question with neither instructions nor criteria, a number, point or box question without instructions | `BadRequestError` with the API's message and no `errorType` |
 | An unknown question type, objects and arrays nested more than 128 deep, an image fault (not JPEG, PNG or WebP, over 10 MB or 40 megapixels, an empty or repeated id, an image URL that is not `https`), a video fault (see [Videos](#videos)), an upload id given with another media type, a batch request without a valid or with a repeated `custom_id`, an empty `add`, `list` paging out of range | `BadRequestError`, `errorType` `api_usage_error` |
+| A request body, or a batch line, over 25 MiB (26,214,400 bytes): a long state, many video frames, inline images | `RequestTooLargeError`, `errorType` `request_too_large_error` |
 | An image URL over 2,048 characters, with user information, on a port other than 443, or on a literal private, loopback or reserved address | `BadRequestError`, `errorType` `image_url_refused` |
 | More than 16 images or more than 4 videos in a request (a held lower image limit once `models()` has been called): one `too_long` entry for each, after the questions' entries | `ValidationError` |
 | A point or box question in a request without images, without `image` when the request has two or more, or with an `image` that is not one of the request's image ids, or `units` other than `pixels` and `normalized` | `ValidationError` with every such entry of the request in one list |

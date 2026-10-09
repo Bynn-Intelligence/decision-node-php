@@ -14,6 +14,7 @@ use Bynn\DecisionNode\Exception\OverloadedError;
 use Bynn\DecisionNode\Exception\PermissionDeniedError;
 use Bynn\DecisionNode\Exception\RateLimitError;
 use Bynn\DecisionNode\Exception\RefusalError;
+use Bynn\DecisionNode\Exception\RequestTooLargeError;
 use Bynn\DecisionNode\Exception\ServerError;
 use Bynn\DecisionNode\Exception\SessionLimitError;
 use Bynn\DecisionNode\Exception\ValidationError;
@@ -88,6 +89,9 @@ final class Errors
         }
         if ($status === 404) {
             return new NotFoundError(...$fields);
+        }
+        if ($status === 413) {
+            return new RequestTooLargeError(...$fields);
         }
         if ($status === 422) {
             return new ValidationError(...$fields + ['entries' => $entries]);

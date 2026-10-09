@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Bynn\DecisionNode\Internal;
 
 use Bynn\DecisionNode\Exception\BadRequestError;
+use Bynn\DecisionNode\Exception\RequestTooLargeError;
 use Bynn\DecisionNode\Exception\ValidationError;
 use Bynn\DecisionNode\Image;
 use Bynn\DecisionNode\Video;
@@ -26,6 +27,8 @@ use Bynn\DecisionNode\VideoFrame;
 final class LocalChecks
 {
     public const MAX_IMAGES = 16;
+    /** The largest request body the API takes, 25 MiB; inline images and video frames count, uploads and URLs do not. */
+    public const MAX_BODY_BYTES = 26_214_400;
     /** Files one `POST /v1/uploads` takes. */
     public const MAX_UPLOAD_FILES = 16;
     public const MAX_VIDEOS = 4;
@@ -106,6 +109,25 @@ final class LocalChecks
         self::raise($entries, $deferred);
         $ids = self::images($images, $limits);
         self::videos($videos, $ids);
+        // The body without its images, before any upload: images only add to
+        // it, and the whole body is checked again once they are placed.
+        self::bodySize(strlen(Prepare::body($model, $state, $questions, [], $videos, boosters: $boosters)));
+    }
+
+    /**
+     * An encoded body over 25 MiB is the API's 413, raised before anything is sent.
+     *
+     * @throws RequestTooLargeError
+     */
+    public static function bodySize(int $bytes): void
+    {
+        if ($bytes > self::MAX_BODY_BYTES) {
+            throw new RequestTooLargeError(
+                'The request body is over 26,214,400 bytes (25 MiB). Send large images as uploads (POST /v1/uploads) and name them by upload_id.',
+                errorType: 'request_too_large_error',
+                reason: sprintf('the body is %d bytes; the limit is %d', $bytes, self::MAX_BODY_BYTES),
+            );
+        }
     }
 
     /**
