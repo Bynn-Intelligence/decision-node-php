@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Bynn\DecisionNode\Internal;
 
+use Bynn\DecisionNode\Booster;
 use Bynn\DecisionNode\Question;
 
 /**
@@ -91,6 +92,30 @@ final class Prepare
         }
 
         return $list;
+    }
+
+    /**
+     * Whether the boosters name the booster, by its bare name or in the
+     * object form `{"name": ...}`.
+     *
+     * @param list<mixed> $boosters
+     */
+    public static function namesBooster(array $boosters, string $name): bool
+    {
+        foreach ($boosters as $booster) {
+            $named = match (true) {
+                is_string($booster) => $booster,
+                $booster instanceof Booster => $booster->name,
+                is_array($booster) => $booster['name'] ?? null,
+                $booster instanceof \stdClass => $booster->name ?? null,
+                default => null,
+            };
+            if ($named === $name) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

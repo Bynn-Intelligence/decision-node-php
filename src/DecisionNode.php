@@ -58,6 +58,9 @@ final class DecisionNode
 
     public const DEFAULT_TIMEOUT = 10.0;
 
+    /** Seconds per attempt of a decision whose boosters name ocr, when no timeout was given. */
+    public const OCR_TIMEOUT = 30.0;
+
     public const DEFAULT_MAX_RETRIES = 2;
 
     /** Seconds one storage PUT of an image upload may take, apart from the API attempt's timeout. */
@@ -88,6 +91,9 @@ final class DecisionNode
 
     public readonly float $timeout;
 
+    /** Whether the timeout was given, which then holds for a request naming ocr too. */
+    private readonly bool $timeoutSet;
+
     public readonly int $maxRetries;
 
     public readonly int $inlineThreshold;
@@ -109,7 +115,7 @@ final class DecisionNode
      * @param string|null                              $apiKey          default: DECISIONNODE_API_KEY
      * @param string|null                              $baseUrl         default: DECISIONNODE_BASE_URL, else https://api.decisionnode.com
      * @param string|null                              $model           default: DECISIONNODE_MODEL, else decisionnode-moe
-     * @param float                                    $timeout         seconds for a whole attempt, above 0 (default 10)
+     * @param float|null                               $timeout         seconds for a whole attempt, above 0 (default 10; 30 for a decision naming the ocr booster)
      * @param int                                      $maxRetries      retries after the first attempt, 0 or more (default 2)
      * @param array<string, string>                    $headers         extra headers sent with every API request and session handshake
      *                                                                  (never with an upload's storage PUT)
@@ -130,7 +136,7 @@ final class DecisionNode
         ?string $apiKey = null,
         ?string $baseUrl = null,
         ?string $model = null,
-        float $timeout = self::DEFAULT_TIMEOUT,
+        ?float $timeout = null,
         int $maxRetries = self::DEFAULT_MAX_RETRIES,
         array $headers = [],
         ?GuzzleClientInterface $httpClient = null,
@@ -139,6 +145,8 @@ final class DecisionNode
         ?\Closure $clock = null,
         float $uploadTimeout = self::DEFAULT_UPLOAD_TIMEOUT,
     ) {
+        $this->timeoutSet = $timeout !== null;
+        $timeout ??= self::DEFAULT_TIMEOUT;
         if (!is_finite($timeout) || $timeout <= 0.0) {
             throw new \InvalidArgumentException(sprintf('timeout must be a number of seconds above 0, got %s.', var_export($timeout, true)));
         }
@@ -279,8 +287,18 @@ final class DecisionNode
                 [$wires, $placed] = $prepared;
                 $body = Prepare::body($model, $state, $questions, $wires, $videos, boosters: $boosters, fallback: $fallback);
                 LocalChecks::bodySize(strlen($body));
+                // A decision naming ocr reads for longer: 30 s per attempt unless
+                // a timeout was given, and never retried after a timeout, since
+                // the server finishes that attempt and may bill it.
+                $ocr = Prepare::namesBooster($boosters, Booster::OCR);
 
-                return $this->api->request('POST', $path, $body)->otherwise(
+                return $this->api->request(
+                    'POST',
+                    $path,
+                    $body,
+                    timeout: $ocr && !$this->timeoutSet ? self::OCR_TIMEOUT : null,
+                    retryAfterTimeout: !$ocr,
+                )->otherwise(
                     function (mixed $reason) use ($path, $state, $questions, $images, $videos, $model, $boosters, $fallback, $again, $placed): PromiseInterface {
                         if (!$again && $placed !== [] && $reason instanceof BadRequestError && in_array($reason->errorType, self::STALE_UPLOAD, true)) {
                             $this->images->forget($placed);

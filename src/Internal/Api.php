@@ -80,18 +80,21 @@ final class Api
         bool $json = true,
         ?float $delay = null,
         bool $stream = false,
+        ?float $timeout = null,
+        bool $retryAfterTimeout = true,
     ): PromiseInterface {
+        $timeout ??= $this->timeout;
         if ($this->apiKey === null) {
             return Create::rejectionFor(new AuthenticationError(
                 'No API key: pass apiKey to the client or set DECISIONNODE_API_KEY.',
             ));
         }
 
-        $attempt = function (int $n, ?float $wait) use (&$attempt, $method, $path, $body, $policy, $contentType, $json, $stream): PromiseInterface {
+        $attempt = function (int $n, ?float $wait) use (&$attempt, $method, $path, $body, $policy, $contentType, $json, $stream, $timeout, $retryAfterTimeout): PromiseInterface {
             $request = $this->buildRequest($method, $path, $body, $contentType);
             $started = microtime(true) + ($wait ?? 0.0);
 
-            return $this->transport->send($request, $wait, $this->timeout, false, $stream && !$json)->then(
+            return $this->transport->send($request, $wait, $timeout, false, $stream && !$json)->then(
                 function (ResponseInterface $response) use (&$attempt, $n, $method, $path, $started, $policy, $json, $stream): mixed {
                     $status = $response->getStatusCode();
                     $headers = self::headers($response);
@@ -129,10 +132,10 @@ final class Api
 
                     throw Errors::fromResponse($status, $headers, $text);
                 },
-                function (mixed $reason) use (&$attempt, $n, $method, $path, $started, $policy): mixed {
+                function (mixed $reason) use (&$attempt, $n, $method, $path, $started, $policy, $retryAfterTimeout): mixed {
                     if ($reason instanceof ConnectionError || $reason instanceof TimeoutError) {
                         $this->log($method, $path, $n, null, null, $started, $reason->getMessage());
-                        if ($n < $this->maxRetries && $policy !== self::RETRY_MUTATION) {
+                        if ($n < $this->maxRetries && $policy !== self::RETRY_MUTATION && ($retryAfterTimeout || !$reason instanceof TimeoutError)) {
                             return $attempt($n + 1, Retry::backoff($n));
                         }
                     }

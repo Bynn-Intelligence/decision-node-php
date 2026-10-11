@@ -24,6 +24,8 @@ Implements version 1.3 of the DecisionNode SDK specification (`SPEC_VERSION` `"1
 - The boosters `face_detection`, `wanted_person` and `ocr`: `Booster::FACE_DETECTION`, `Booster::WANTED_PERSON` and `Booster::OCR`, and `Booster::ocr($prompt)` and `Booster::wantedPerson($threshold)` for their options. Their readings: `FaceDetectionReading` (`image`, `faces`, `detections` of `box` and `confidence`), `WantedPersonReading` (`image`, `faces`, `matches` of `box`, `score` and `reference`) and `OcrReading` (`image`, `text`, `truncated`); a box holds its corners as sent.
 - `Usage::$cost`, a `Cost` (`usd`, `modelUsd`, `boostersUsd`, `freeTier`): what an answer cost, exactly as the API sent it, on decisions, batch results and a session's open (a frame reply's `usage` array holds it as sent); null when absent.
 
+- A decision whose boosters name `ocr` (by name or as an object) waits `DecisionNode::OCR_TIMEOUT`, 30 s, per attempt unless `timeout` was given, and is never retried after a timeout, since the server finishes that attempt and may bill it; its other retries stay. This holds for `decide`, the helpers and each `decideMany` request. The client's `timeout` argument is now nullable, null meaning the default.
+
 ### Changed
 
 - The default model is `decisionnode-moe` (it was `decisionnode-latest`), the family id that always means the current release; `decisionnode-flash` is the fast one. A pinned id is `decisionnode-<family>-<version>`, read from the model list, and an answer names the pinned id that answered. The earlier ids stay accepted by the API.
