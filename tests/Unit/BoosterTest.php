@@ -236,7 +236,7 @@ final class BoosterTest extends TestCase
                     ['image' => 'gate', 'faces' => 1],
                 ]],
                 'wanted_person' => ['status' => 'ok', 'results' => [
-                    ['image' => 'gate', 'faces' => 2, 'matches' => [['box' => ['x1' => 412, 'y1' => 188, 'x2' => 486, 'y2' => 274], 'score' => 0.93, 'reference' => 'wl_1:entry-0192']]],
+                    ['image' => 'gate', 'faces' => 2, 'matches' => [['box' => ['x1' => 412, 'y1' => 188, 'x2' => 486, 'y2' => 274], 'score' => 0.93, 'reference' => 'wanted:2024-12345']]],
                     ['image' => 'gate', 'faces' => 1, 'matches' => [['box' => ['x1' => 1, 'y1' => 2, 'x2' => 3, 'y2' => 4], 'score' => 0.9, 'reference' => 192]]],
                 ]],
             ],
@@ -249,7 +249,7 @@ final class BoosterTest extends TestCase
         self::assertInstanceOf(UnknownReading::class, $noList);
         [$match, $badReference] = $d->evidence['wanted_person']->results;
         self::assertInstanceOf(\Bynn\DecisionNode\WantedPersonReading::class, $match);
-        self::assertSame([2, 'wl_1:entry-0192', 274], [$match->faces, $match->matches[0]['reference'], $match->matches[0]['box']['y2']]);
+        self::assertSame([2, 'wanted:2024-12345', 274], [$match->faces, $match->matches[0]['reference'], $match->matches[0]['box']['y2']]);
         self::assertInstanceOf(UnknownReading::class, $badReference);
     }
 
