@@ -89,6 +89,7 @@ final class Decision implements DecisionResult, \ArrayAccess, \Countable, \Itera
                 is_int($seconds) || is_float($seconds) ? $seconds : null,
                 is_int($usage['booster_tokens'] ?? null) ? $usage['booster_tokens'] : null,
                 is_int($usage['boosters'] ?? null) ? $usage['boosters'] : null,
+                Cost::fromUsage($usage),
             ),
             requestId: $headers['x-request-id'] ?? null,
             latencyMs: $latency,

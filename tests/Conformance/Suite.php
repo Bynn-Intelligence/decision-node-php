@@ -1222,6 +1222,7 @@ final class Suite
                 'video_seconds' => $d->usage->videoSeconds,
                 'booster_tokens' => $d->usage->boosterTokens,
                 'boosters' => $d->usage->boosters,
+                'cost' => $d->usage->cost === null ? null : ['usd' => $d->usage->cost->usd, 'model_usd' => $d->usage->cost->modelUsd, 'boosters_usd' => $d->usage->cost->boostersUsd, 'free_tier' => $d->usage->cost->freeTier],
             ],
             'warnings' => $d->warnings,
             'fallback' => $d->fallback === null ? null : ['served_model' => $d->fallback->servedModel, 'requested_model' => $d->fallback->requestedModel],

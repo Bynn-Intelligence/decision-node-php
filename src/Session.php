@@ -98,6 +98,7 @@ final class Session
         $this->usage = new Usage(
             is_int($usage['input_tokens'] ?? null) ? $usage['input_tokens'] : null,
             is_int($usage['output_tokens'] ?? null) ? $usage['output_tokens'] : null,
+            cost: Cost::fromUsage($usage),
         );
         $this->answers = Reply::fromArray(['answers' => $raw['answers'] ?? []], $shape)->answers;
         $this->safety = is_array($raw['safety'] ?? null) ? $raw['safety'] : null;

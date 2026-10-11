@@ -21,6 +21,8 @@ Implements version 1.3 of the DecisionNode SDK specification (`SPEC_VERSION` `"1
 - An error whose body is not JSON (an edge's or a proxy's page, or no body) is classed by its status alone, with `errorType` null, `requestId` and `reason` from their headers, nothing read from the body (`body` is null), and the message `HTTP <status> <text>` from a fixed table (`HTTP 413 Content Too Large`), then ` (request id <id>)` when sent.
 - An image id over 64 characters (code points) is refused before anything is sent: "Image <n>: its id is longer than 64 characters.", after the empty-id check and before the duplicate check, on `decide`, the helpers, `decideMany` (for the whole call), batch lines and `checkRequest`; a session frame's image goes without its id and is not checked for it.
 
+- `Usage::$cost`, a `Cost` (`usd`, `modelUsd`, `boostersUsd`, `freeTier`): what an answer cost, exactly as the API sent it, on decisions, batch results and a session's open (a frame reply's `usage` array holds it as sent); null when absent.
+
 ### Changed
 
 - The default model is `decisionnode-moe` (it was `decisionnode-latest`), the family id that always means the current release; `decisionnode-flash` is the fast one. A pinned id is `decisionnode-<family>-<version>`, read from the model list, and an answer names the pinned id that answered. The earlier ids stay accepted by the API.

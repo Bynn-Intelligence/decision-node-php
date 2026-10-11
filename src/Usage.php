@@ -10,7 +10,8 @@ namespace Bynn\DecisionNode;
  * cover; both are null for a request without videos. A request with boosters
  * reports `boosterTokens`, the readings' share of `inputTokens`, and
  * `boosters`, the booster calls billed; both are null for a request without
- * boosters.
+ * boosters. `cost` is what the answer cost in USD, as the API sent it; null
+ * when it sent none.
  */
 final class Usage
 {
@@ -21,6 +22,7 @@ final class Usage
         public readonly int|float|null $videoSeconds = null,
         public readonly ?int $boosterTokens = null,
         public readonly ?int $boosters = null,
+        public readonly ?Cost $cost = null,
     ) {
     }
 }

@@ -140,7 +140,7 @@ Answers are read by question id, `$d['route']` or `$d->answers['route']`. An ans
 | `touches_production` | truth | Does this action change a production system, production data or anything customers use? | |
 | `verdict` | choice | Should this action run as it is, wait for a person to confirm it, or be blocked? | `allow` "safe to run without asking", `confirm` "a person should confirm it first", `block` "should not run" |
 
-A `Decision` has `answers`, `model` (the resolved model version), `usage->inputTokens`, `usage->outputTokens`, `usage->videoFrames` and `usage->videoSeconds` (for a request with videos, `null` otherwise), `warnings` (a list of strings, empty unless the API sent some), `evidence`, `usage->boosterTokens` and `usage->boosters` (for a request with boosters, `null` otherwise; see [Boosters](#boosters)), `requestId`, `latencyMs` (the server's), `safety` and `raw` (the parsed body).
+A `Decision` has `answers`, `model` (the resolved model version), `usage->inputTokens`, `usage->outputTokens`, `usage->videoFrames` and `usage->videoSeconds` (for a request with videos, `null` otherwise), `warnings` (a list of strings, empty unless the API sent some), `evidence`, `usage->boosterTokens` and `usage->boosters` (for a request with boosters, `null` otherwise; see [Boosters](#boosters)), `usage->cost` (what the answer cost in USD, exactly as the API sent it: `usd`, its parts `modelUsd` and `boostersUsd`, and `freeTier`; read `usd` rather than adding up the parts; also on a session's open and in batch results; `null` when absent), `requestId`, `latencyMs` (the server's), `safety` and `raw` (the parsed body).
 
 ```php
 $answer = $dn->check('Refund me now or I cancel.', 'Is the customer asking for a refund?');
