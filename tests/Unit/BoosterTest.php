@@ -225,6 +225,34 @@ final class BoosterTest extends TestCase
         }
     }
 
+    public function testFaceReadings(): void
+    {
+        $d = $this->client([self::json(200, [
+            'model' => 'm', 'answers' => [],
+            'evidence' => [
+                'face_detection' => ['status' => 'ok', 'results' => [
+                    ['image' => 'gate', 'faces' => 70, 'detections' => [['box' => ['x1' => 0.3219, 'y1' => 0.2611, 'x2' => 0.3797, 'y2' => 0.3806], 'confidence' => 0.97]]],
+                    ['image' => 'gate', 'faces' => 1, 'detections' => [['box' => ['x1' => 1, 'y1' => 2, 'x2' => 3], 'confidence' => 0.5]]],
+                    ['image' => 'gate', 'faces' => 1],
+                ]],
+                'wanted_person' => ['status' => 'ok', 'results' => [
+                    ['image' => 'gate', 'faces' => 2, 'matches' => [['box' => ['x1' => 412, 'y1' => 188, 'x2' => 486, 'y2' => 274], 'score' => 0.93, 'reference' => 'wl_1:entry-0192']]],
+                    ['image' => 'gate', 'faces' => 1, 'matches' => [['box' => ['x1' => 1, 'y1' => 2, 'x2' => 3, 'y2' => 4], 'score' => 0.9, 'reference' => 192]]],
+                ]],
+            ],
+        ])])->decide(questions: ['q' => truth('?')]);
+        self::assertNotNull($d->evidence);
+        [$found, $noCorner, $noList] = $d->evidence['face_detection']->results;
+        self::assertInstanceOf(\Bynn\DecisionNode\FaceDetectionReading::class, $found);
+        self::assertSame([70, 0.3219, 0.97], [$found->faces, $found->detections[0]['box']['x1'], $found->detections[0]['confidence']]);
+        self::assertInstanceOf(UnknownReading::class, $noCorner);
+        self::assertInstanceOf(UnknownReading::class, $noList);
+        [$match, $badReference] = $d->evidence['wanted_person']->results;
+        self::assertInstanceOf(\Bynn\DecisionNode\WantedPersonReading::class, $match);
+        self::assertSame([2, 'wl_1:entry-0192', 274], [$match->faces, $match->matches[0]['reference'], $match->matches[0]['box']['y2']]);
+        self::assertInstanceOf(UnknownReading::class, $badReference);
+    }
+
     public function testOcrReading(): void
     {
         $d = $this->client([self::json(200, [

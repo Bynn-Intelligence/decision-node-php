@@ -8,8 +8,9 @@ namespace Bynn\DecisionNode;
  * One booster's reading of one image, named by `image`.
  *
  * The `age` booster's readings are {@see AgeReading}s, the `ai_generated`
- * booster's {@see AiGeneratedReading}s and the `ocr` booster's
- * {@see OcrReading}s. A reading of a booster this version of
+ * booster's {@see AiGeneratedReading}s, the `face_detection` booster's
+ * {@see FaceDetectionReading}s, the `wanted_person` booster's
+ * {@see WantedPersonReading}s and the `ocr` booster's {@see OcrReading}s. A reading of a booster this version of
  * the SDK does not know, or one with a field missing or of the wrong type, is
  * an {@see UnknownReading} holding its raw fields: the decision does not fail.
  */
@@ -37,8 +38,29 @@ abstract class Reading
             $booster === Booster::AGE && AgeReading::wellFormed($raw) => new AgeReading($raw),
             $booster === Booster::AI_GENERATED && AiGeneratedReading::wellFormed($raw) => new AiGeneratedReading($raw),
             $booster === Booster::OCR && OcrReading::wellFormed($raw) => new OcrReading($raw),
+            $booster === Booster::FACE_DETECTION && FaceDetectionReading::wellFormed($raw) => new FaceDetectionReading($raw),
+            $booster === Booster::WANTED_PERSON && WantedPersonReading::wellFormed($raw) => new WantedPersonReading($raw),
             default => new UnknownReading($raw),
         };
+    }
+
+    /**
+     * Whether `$box` has the four corners `x1`, `y1`, `x2`, `y2`, each a number.
+     *
+     * @internal
+     */
+    protected static function box(mixed $box): bool
+    {
+        if (!is_array($box)) {
+            return false;
+        }
+        foreach (['x1', 'y1', 'x2', 'y2'] as $corner) {
+            if (!self::isNumber($box[$corner] ?? null)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

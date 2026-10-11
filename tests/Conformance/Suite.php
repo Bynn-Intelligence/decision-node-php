@@ -16,6 +16,7 @@ use Bynn\DecisionNode\ChoiceAnswer;
 use Bynn\DecisionNode\Decision;
 use Bynn\DecisionNode\DecisionNode;
 use Bynn\DecisionNode\Evidence;
+use Bynn\DecisionNode\FaceDetectionReading;
 use Bynn\DecisionNode\Exception\DecisionNodeError;
 use Bynn\DecisionNode\Exception\OverloadedError;
 use Bynn\DecisionNode\Exception\RateLimitError;
@@ -36,6 +37,7 @@ use Bynn\DecisionNode\SessionClosed;
 use Bynn\DecisionNode\TruthAnswer;
 use Bynn\DecisionNode\UnknownAnswer;
 use Bynn\DecisionNode\Video;
+use Bynn\DecisionNode\WantedPersonReading;
 use Bynn\DecisionNode\VideoFrame;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\HandlerStack;
@@ -1252,6 +1254,8 @@ final class Suite
             $r instanceof AgeReading => ['kind' => 'age', 'image' => $r->image, 'faces' => $r->faces, 'age_years' => $r->ageYears, 'low' => $r->low, 'high' => $r->high, 'confidence' => $r->confidence],
             $r instanceof AiGeneratedReading => ['kind' => 'ai_generated', 'image' => $r->image, 'generated' => $r->generated, 'confidence' => $r->confidence, 'method' => $r->method, 'top_generator' => $r->topGenerator, 'c2pa_signer' => $r->c2paSigner, 'c2pa' => $r->c2pa],
             $r instanceof OcrReading => ['kind' => 'ocr', 'image' => $r->image, 'text' => $r->text, 'truncated' => $r->truncated],
+            $r instanceof FaceDetectionReading => ['kind' => 'face_detection', 'image' => $r->image, 'faces' => $r->faces, 'detections' => $r->detections],
+            $r instanceof WantedPersonReading => ['kind' => 'wanted_person', 'image' => $r->image, 'faces' => $r->faces, 'matches' => $r->matches],
             default => ['kind' => 'unknown', 'raw' => $r->raw],
         };
     }
