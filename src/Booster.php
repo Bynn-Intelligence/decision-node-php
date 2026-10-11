@@ -66,9 +66,9 @@ final class Booster implements \JsonSerializable
     }
 
     /**
-     * The ocr booster with a prompt: what to read or answer from the
-     * picture's text, at most 500 characters (the API's limit, not checked
-     * here).
+     * The ocr booster with a prompt: a task, an instruction or a JSON schema
+     * for what to read from the picture, at most 2,000 characters (the API's
+     * limit, not checked here).
      *
      * @param iterable<string>|null $images
      */

@@ -21,7 +21,7 @@ Implements version 1.3 of the DecisionNode SDK specification (`SPEC_VERSION` `"1
 - An error whose body is not JSON (an edge's or a proxy's page, or no body) is classed by its status alone, with `errorType` null, `requestId` and `reason` from their headers, nothing read from the body (`body` is null), and the message `HTTP <status> <text>` from a fixed table (`HTTP 413 Content Too Large`), then ` (request id <id>)` when sent.
 - An image id over 64 characters (code points) is refused before anything is sent: "Image <n>: its id is longer than 64 characters.", after the empty-id check and before the duplicate check, on `decide`, the helpers, `decideMany` (for the whole call), batch lines and `checkRequest`; a session frame's image goes without its id and is not checked for it.
 
-- The boosters `face_detection`, `wanted_person` and `ocr`: `Booster::FACE_DETECTION`, `Booster::WANTED_PERSON` and `Booster::OCR`, and `Booster::ocr($prompt)` and `Booster::wantedPerson($threshold)` for their options. Their readings are generic readings in this version.
+- The boosters `face_detection`, `wanted_person` and `ocr`: `Booster::FACE_DETECTION`, `Booster::WANTED_PERSON` and `Booster::OCR`, and `Booster::ocr($prompt)` and `Booster::wantedPerson($threshold)` for their options. An ocr reading is an `OcrReading` (`image`, `text`, `truncated`); the other two readings are generic readings in this version.
 - `Usage::$cost`, a `Cost` (`usd`, `modelUsd`, `boostersUsd`, `freeTier`): what an answer cost, exactly as the API sent it, on decisions, batch results and a session's open (a frame reply's `usage` array holds it as sent); null when absent.
 
 ### Changed

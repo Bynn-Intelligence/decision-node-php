@@ -225,6 +225,30 @@ final class BoosterTest extends TestCase
         }
     }
 
+    public function testOcrReading(): void
+    {
+        $d = $this->client([self::json(200, [
+            'model' => 'm', 'answers' => [],
+            'evidence' => ['ocr' => ['status' => 'ok', 'results' => [
+                ['image' => 'receipt', 'text' => 'Total 740.00 SEK', 'truncated' => false],
+                ['image' => 'blank', 'text' => '', 'truncated' => false],
+                ['image' => 'form', 'text' => '{}', 'truncated' => true],
+                ['image' => 'a', 'text' => 740, 'truncated' => false],
+                ['image' => 'a', 'text' => 'x'],
+            ]]],
+        ])])->decide(questions: ['q' => truth('?')]);
+        self::assertNotNull($d->evidence);
+        [$read, $blank, $cut, $wrong, $badFlag] = $d->evidence['ocr']->results;
+        self::assertInstanceOf(\Bynn\DecisionNode\OcrReading::class, $read);
+        self::assertSame(['receipt', 'Total 740.00 SEK', false], [$read->image, $read->text, $read->truncated]);
+        self::assertInstanceOf(\Bynn\DecisionNode\OcrReading::class, $blank);
+        self::assertSame('', $blank->text);
+        self::assertInstanceOf(\Bynn\DecisionNode\OcrReading::class, $cut);
+        self::assertTrue($cut->truncated);
+        self::assertInstanceOf(UnknownReading::class, $wrong);
+        self::assertInstanceOf(UnknownReading::class, $badFlag);
+    }
+
     public function testNewBoosterOptions(): void
     {
         $dn = $this->client([self::json(400, ['detail' => ['error_type' => 'booster_unknown', 'message' => 'Unknown booster: ocr']])]);

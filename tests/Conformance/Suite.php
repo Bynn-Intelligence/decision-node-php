@@ -25,6 +25,7 @@ use Bynn\DecisionNode\FrameError;
 use Bynn\DecisionNode\Image;
 use Bynn\DecisionNode\ModelInfo;
 use Bynn\DecisionNode\NumberAnswer;
+use Bynn\DecisionNode\OcrReading;
 use Bynn\DecisionNode\PointAnswer;
 use Bynn\DecisionNode\Reading;
 use Bynn\DecisionNode\Reply;
@@ -1250,6 +1251,7 @@ final class Suite
         return match (true) {
             $r instanceof AgeReading => ['kind' => 'age', 'image' => $r->image, 'faces' => $r->faces, 'age_years' => $r->ageYears, 'low' => $r->low, 'high' => $r->high, 'confidence' => $r->confidence],
             $r instanceof AiGeneratedReading => ['kind' => 'ai_generated', 'image' => $r->image, 'generated' => $r->generated, 'confidence' => $r->confidence, 'method' => $r->method, 'top_generator' => $r->topGenerator, 'c2pa_signer' => $r->c2paSigner, 'c2pa' => $r->c2pa],
+            $r instanceof OcrReading => ['kind' => 'ocr', 'image' => $r->image, 'text' => $r->text, 'truncated' => $r->truncated],
             default => ['kind' => 'unknown', 'raw' => $r->raw],
         };
     }
