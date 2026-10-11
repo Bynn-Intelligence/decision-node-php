@@ -27,7 +27,7 @@ final class QuestionTypesTest extends TestCase
     public function testNumberHelper(): void
     {
         $dn = $this->client([self::json(200, [
-            'model' => 'decisionnode-1.0',
+            'model' => 'decisionnode-moe',
             'answers' => ['number' => ['type' => 'number', 'number' => 7, 'expected' => 7.0, 'confidence' => 0.78, 'probabilities' => ['6' => 0.105, '7' => 0.783, '7.5' => 0.098]]],
             'usage' => ['input_tokens' => 12, 'output_tokens' => 0],
         ])]);

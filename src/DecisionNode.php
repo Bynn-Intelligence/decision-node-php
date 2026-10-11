@@ -54,7 +54,7 @@ final class DecisionNode
 
     public const DEFAULT_BASE_URL = 'https://api.decisionnode.com';
 
-    public const DEFAULT_MODEL = 'decisionnode-latest';
+    public const DEFAULT_MODEL = 'decisionnode-moe';
 
     public const DEFAULT_TIMEOUT = 10.0;
 
@@ -108,7 +108,7 @@ final class DecisionNode
      *
      * @param string|null                              $apiKey          default: DECISIONNODE_API_KEY
      * @param string|null                              $baseUrl         default: DECISIONNODE_BASE_URL, else https://api.decisionnode.com
-     * @param string|null                              $model           default: DECISIONNODE_MODEL, else decisionnode-latest
+     * @param string|null                              $model           default: DECISIONNODE_MODEL, else decisionnode-moe
      * @param float                                    $timeout         seconds for a whole attempt, above 0 (default 10)
      * @param int                                      $maxRetries      retries after the first attempt, 0 or more (default 2)
      * @param array<string, string>                    $headers         extra headers sent with every API request and session handshake
@@ -202,11 +202,11 @@ final class DecisionNode
      * @param iterable<Image|array<string, mixed>>|null $images up to 16
      * @param iterable<Video|array<string, mixed>>|null $videos up to 4, each as frames with their times
      * @param string|null                           $model     overrides the client's model for this call: a model's
-     *                                                          name, or a fine-tuned model's (`decisionnode-1.0-flash@acme/fraud`,
+     *                                                          name, or a fine-tuned model's (`decisionnode-flash@acme/fraud`,
      *                                                          `...:3` for one version), sent as given
      * @param iterable<string|Booster|array<string, mixed>>|null $boosters up to 4, in order: a booster's name, a Booster
      *                                                          or a wire form; their readings come back in `evidence`
-     * @param bool|null                             $fallback  false: a request for decisionnode-1.0 waits for its own
+     * @param bool|null                             $fallback  false: a request for decisionnode-moe waits for its own
      *                                                          model (the 529) rather than be answered by Flash; null
      *                                                          sends nothing and the API's default applies
      *

@@ -16,7 +16,7 @@ final class BodyLimitTest extends TestCase
 
     private static function state(int $extra): string
     {
-        $overhead = strlen('{"model":"decisionnode-latest","state":"","questions":{"q":{"type":"truth","instructions":"?"}}}');
+        $overhead = strlen('{"model":"decisionnode-moe","state":"","questions":{"q":{"type":"truth","instructions":"?"}}}');
 
         return str_repeat('x', self::LIMIT - $overhead + $extra);
     }
@@ -58,7 +58,7 @@ final class BodyLimitTest extends TestCase
             $wire = $threshold === 0
                 ? '{"id":"scan","upload_id":"' . str_repeat('u', 36) . '"}'
                 : json_encode(Image::fromData('scan', $png)->toArray(), JSON_UNESCAPED_SLASHES);
-            $overhead = strlen('{"model":"decisionnode-latest","state":"","questions":{"q":{"type":"truth","instructions":"?"}},"images":[' . $wire . ']}');
+            $overhead = strlen('{"model":"decisionnode-moe","state":"","questions":{"q":{"type":"truth","instructions":"?"}},"images":[' . $wire . ']}');
             try {
                 $dn->checkRequest('decide', $request(self::stateOf(self::LIMIT - $overhead + 1)));
                 self::fail('one byte over, threshold ' . $threshold);

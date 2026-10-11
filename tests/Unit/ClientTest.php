@@ -41,7 +41,7 @@ final class ClientTest extends TestCase
         self::assertSame('application/json', $request->getHeaderLine('Content-Type'));
         self::assertFalse($request->hasHeader('x-decisionnode-safety-body'));
         self::assertSame(
-            '{"model":"decisionnode-latest","state":{"ticket":"charged twice"},"questions":{'
+            '{"model":"decisionnode-moe","state":{"ticket":"charged twice"},"questions":{'
             . '"route":{"type":"choice","instructions":"Where?","criteria":{"billing":"money","bug":"broken"}},'
             . '"urgency":{"type":"score","instructions":"How urgent?","criteria":["low","high"]},'
             . '"q":{"type":"truth","instructions":"Escalate?"},'
@@ -54,7 +54,7 @@ final class ClientTest extends TestCase
     {
         $dn = $this->client([self::truthBody()]);
         $dn->decide(questions: ['0' => truth('a'), '' => truth('b')]);
-        self::assertSame('{"model":"decisionnode-latest","state":"","questions":{"0":{"type":"truth","instructions":"a"},"":{"type":"truth","instructions":"b"}}}', (string) $this->sent()->getBody());
+        self::assertSame('{"model":"decisionnode-moe","state":"","questions":{"0":{"type":"truth","instructions":"a"},"":{"type":"truth","instructions":"b"}}}', (string) $this->sent()->getBody());
     }
 
     public function testImagesAreSentInOrder(): void
@@ -69,7 +69,7 @@ final class ClientTest extends TestCase
     public function testDecisionFields(): void
     {
         $dn = $this->client([self::json(200, [
-            'model' => 'decisionnode-1.0',
+            'model' => 'decisionnode-moe',
             'answers' => [
                 'route' => ['type' => 'choice', 'choice' => 'billing', 'confidence' => 0.73, 'probabilities' => ['account' => 0.12, 'billing' => 0.8200000000000001, 'bug' => 0.060000000000000005]],
                 'urgency' => ['type' => 'score', 'score' => 2.31, 'confidence' => 0.31, 'legend' => (object) ['0' => 'routine', '1' => 'today'], 'probabilities' => (object) ['0' => 0.01, '1' => 0.99]],
@@ -80,7 +80,7 @@ final class ClientTest extends TestCase
         ], ['X-Request-Id' => 'req_9', 'X-DecisionNode-Latency-Ms' => '23', 'X-DecisionNode-Safety' => 'harm=0.031, self_harm=0.004'])]);
 
         $d = $dn->decide('s', ['q' => truth('?')]);
-        self::assertSame('decisionnode-1.0', $d->model);
+        self::assertSame('decisionnode-moe', $d->model);
         self::assertSame('req_9', $d->requestId);
         self::assertSame(23, $d->latencyMs);
         self::assertSame(62, $d->usage->inputTokens);
@@ -125,46 +125,46 @@ final class ClientTest extends TestCase
     public function testEnvironmentAndPrecedence(): void
     {
         putenv('DECISIONNODE_API_KEY=dn_from_env');
-        putenv('DECISIONNODE_MODEL=decisionnode-1.0-flash');
+        putenv('DECISIONNODE_MODEL=decisionnode-flash');
         putenv('DECISIONNODE_BASE_URL=https://env.example.test/');
 
         $dn = $this->client([self::truthBody(), self::truthBody(), self::truthBody()], ['apiKey' => null, 'baseUrl' => null]);
         $dn->decide('s', ['q' => truth('?')]);
         self::assertSame('Bearer dn_from_env', $this->sent(0)->getHeaderLine('Authorization'));
         self::assertSame('https://env.example.test/v1/decide', (string) $this->sent(0)->getUri());
-        self::assertSame('decisionnode-1.0-flash', $this->sentBody(0)->model);
+        self::assertSame('decisionnode-flash', $this->sentBody(0)->model);
 
-        $dn->decide('s', ['q' => truth('?')], model: 'decisionnode-1.0');
-        self::assertSame('decisionnode-1.0', $this->sentBody(1)->model);
+        $dn->decide('s', ['q' => truth('?')], model: 'decisionnode-moe');
+        self::assertSame('decisionnode-moe', $this->sentBody(1)->model);
 
-        $explicit = $this->client([self::truthBody()], ['apiKey' => 'dn_explicit', 'model' => 'decisionnode-flash-latest']);
+        $explicit = $this->client([self::truthBody()], ['apiKey' => 'dn_explicit', 'model' => 'decisionnode-flash']);
         $explicit->decide('s', ['q' => truth('?')]);
         self::assertSame('Bearer dn_explicit', $this->sent(0)->getHeaderLine('Authorization'));
-        self::assertSame('decisionnode-flash-latest', $this->sentBody(0)->model);
+        self::assertSame('decisionnode-flash', $this->sentBody(0)->model);
     }
 
     public function testEmptyArgumentsCountAsNotGiven(): void
     {
         putenv('DECISIONNODE_API_KEY=dn_from_env');
-        putenv('DECISIONNODE_MODEL=decisionnode-1.0-flash');
+        putenv('DECISIONNODE_MODEL=decisionnode-flash');
         putenv('DECISIONNODE_BASE_URL=https://env.example.test');
         $dn = $this->client([self::truthBody(), self::truthBody()], ['apiKey' => '', 'baseUrl' => '', 'model' => '']);
         $dn->decide('s', ['q' => truth('?')], model: '');
         self::assertSame('Bearer dn_from_env', $this->sent(0)->getHeaderLine('Authorization'));
         self::assertSame('https://env.example.test/v1/decide', (string) $this->sent(0)->getUri());
-        self::assertSame('decisionnode-1.0-flash', $this->sentBody(0)->model);
+        self::assertSame('decisionnode-flash', $this->sentBody(0)->model);
 
         putenv('DECISIONNODE_MODEL');
         $dn = $this->client([self::truthBody()], ['model' => '']);
         $dn->decide('s', ['q' => truth('?')]);
-        self::assertSame('decisionnode-latest', $this->sentBody(0)->model);
+        self::assertSame('decisionnode-moe', $this->sentBody(0)->model);
     }
 
     public function testDefaults(): void
     {
         $dn = new DecisionNode(apiKey: 'k');
         self::assertSame('https://api.decisionnode.com', $dn->baseUrl);
-        self::assertSame('decisionnode-latest', $dn->model);
+        self::assertSame('decisionnode-moe', $dn->model);
         self::assertSame(10.0, $dn->timeout);
         self::assertSame(2, $dn->maxRetries);
     }
@@ -221,7 +221,7 @@ final class ClientTest extends TestCase
 
         $truth = $dn->check('Refund me.', 'Refund?', ifTrue: 'money back');
         self::assertSame(0.97, $truth->truth);
-        self::assertSame('{"model":"decisionnode-latest","state":"Refund me.","questions":{"check":{"type":"truth","instructions":"Refund?","criteria":{"true":"money back"}}}}', (string) $this->sent(0)->getBody());
+        self::assertSame('{"model":"decisionnode-moe","state":"Refund me.","questions":{"check":{"type":"truth","instructions":"Refund?","criteria":{"true":"money back"}}}}', (string) $this->sent(0)->getBody());
 
         $choice = $dn->classify('Paid in kronor', 'Currency?', ['SEK', 'EUR']);
         self::assertSame('SEK', $choice->choice);
@@ -253,9 +253,9 @@ final class ClientTest extends TestCase
     public function testGateTakesImagesAndModel(): void
     {
         $dn = $this->client([self::truthBody()]);
-        $dn->gate('Restart the payments service.', images: [Image::fromUrl('scan', 'https://example.com/scan.png')], model: 'decisionnode-1.0-flash');
+        $dn->gate('Restart the payments service.', images: [Image::fromUrl('scan', 'https://example.com/scan.png')], model: 'decisionnode-flash');
         $body = $this->sentBody();
-        self::assertSame('decisionnode-1.0-flash', $body->model);
+        self::assertSame('decisionnode-flash', $body->model);
         self::assertSame('https://example.com/scan.png', $body->images[0]->url);
     }
 
@@ -277,7 +277,7 @@ final class ClientTest extends TestCase
     public function testModels(): void
     {
         $dn = $this->client([self::json(200, ['models' => [
-            ['name' => 'decisionnode-1.0', 'description' => 'Main.', 'release_date' => '2026-10-01', 'max_input_tokens' => 32768],
+            ['name' => 'decisionnode-moe', 'description' => 'Main.', 'release_date' => '2026-10-01', 'max_input_tokens' => 32768],
         ]])]);
         $models = $dn->models();
         self::assertSame('GET', $this->sent()->getMethod());
@@ -285,7 +285,7 @@ final class ClientTest extends TestCase
         self::assertSame('', (string) $this->sent()->getBody());
         self::assertFalse($this->sent()->hasHeader('Content-Type'));
         self::assertCount(1, $models);
-        self::assertSame('decisionnode-1.0', $models[0]->name);
+        self::assertSame('decisionnode-moe', $models[0]->name);
         self::assertSame('2026-10-01', $models[0]->releaseDate);
         self::assertSame(['max_input_tokens' => 32768], $models[0]->limits);
     }

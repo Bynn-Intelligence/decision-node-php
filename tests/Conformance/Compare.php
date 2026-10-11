@@ -22,6 +22,10 @@ final class Compare
 
     public static function same(mixed $expected, mixed $actual): bool
     {
+        // An expected {"$pattern": regex} matches a string the regex finds.
+        if ($expected instanceof \stdClass && array_keys(get_object_vars($expected)) === ['$pattern'] && is_string($expected->{'$pattern'})) {
+            return is_string($actual) && preg_match('~' . str_replace('~', '\~', $expected->{'$pattern'}) . '~u', $actual) === 1;
+        }
         if (is_bool($expected) || is_bool($actual)) {
             return is_bool($expected) && is_bool($actual) && $expected === $actual;
         }
@@ -80,7 +84,7 @@ final class Compare
      */
     public static function match(mixed $expected, mixed $actual, string $path): void
     {
-        if ($expected instanceof \stdClass) {
+        if ($expected instanceof \stdClass && array_keys(get_object_vars($expected)) !== ['$pattern']) {
             $have = self::map($actual);
             if ($have !== null) {
                 foreach (get_object_vars($expected) as $key => $value) {

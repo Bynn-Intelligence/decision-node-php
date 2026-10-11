@@ -271,7 +271,7 @@ final class VideoTest extends TestCase
     public function testVideoUsageAndWarnings(): void
     {
         $dn = $this->client([self::json(200, [
-            'model' => 'decisionnode-1.0',
+            'model' => 'decisionnode-moe',
             'answers' => ['q' => ['type' => 'truth', 'truth' => 0.5]],
             'usage' => ['input_tokens' => 1300, 'output_tokens' => 0, 'video_frames' => 20, 'video_seconds' => 10.25],
             'warnings' => ["Video 'dock' was read at 1 frame a second."],

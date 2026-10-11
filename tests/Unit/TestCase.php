@@ -78,12 +78,12 @@ abstract class TestCase extends \PHPUnit\Framework\TestCase
     protected static function truthBody(float $truth = 0.94, string $id = 'q'): Response
     {
         return self::json(200, [
-            'model' => 'decisionnode-1.0',
+            'model' => 'decisionnode-moe',
             'answers' => [$id => ['type' => 'truth', 'truth' => $truth]],
             'usage' => ['input_tokens' => 9, 'output_tokens' => 0],
         ], [
             'x-request-id' => 'req_1',
-            'x-decisionnode-model' => 'decisionnode-1.0',
+            'x-decisionnode-model' => 'decisionnode-moe',
             'x-decisionnode-latency-ms' => '23',
             'x-decisionnode-safety' => 'harm=0.031, self_harm=0.004',
         ]);

@@ -27,8 +27,8 @@ final class ConsistencyTest extends TestCase
     private static function models(int $maxWindow = 16): array
     {
         return ['models' => [
-            ['name' => 'decisionnode-1.0', 'version' => 'decisionnode-1.0', 'alias' => 'decisionnode-latest', 'number_max_grid_values' => 4096, 'sessions' => ['enabled' => true, 'max_window' => $maxWindow]],
-            ['name' => 'decisionnode-1.0-flash', 'version' => 'decisionnode-1.0-flash', 'alias' => 'decisionnode-flash-latest', 'number_max_grid_values' => 0, 'sessions' => ['enabled' => false]],
+            ['name' => 'decisionnode-moe-0.9.0', 'version' => 'decisionnode-moe-0.9.0', 'alias' => 'decisionnode-moe', 'number_max_grid_values' => 4096, 'sessions' => ['enabled' => true, 'max_window' => $maxWindow]],
+            ['name' => 'decisionnode-flash-0.9.0', 'version' => 'decisionnode-flash-0.9.0', 'alias' => 'decisionnode-flash', 'number_max_grid_values' => 0, 'sessions' => ['enabled' => false]],
         ]];
     }
 
@@ -36,10 +36,10 @@ final class ConsistencyTest extends TestCase
     {
         $held = new Held();
         $held->keep(self::models()['models']);
-        self::assertSame(16, $held->limits('decisionnode-1.0')['sessions']['max_window']);
-        self::assertSame(16, $held->limits('decisionnode-latest')['sessions']['max_window']);
-        self::assertSame('decisionnode-latest', $held->limits('decisionnode-latest')['model']);
-        self::assertSame(0, $held->limits('decisionnode-flash-latest')['number_max_grid_values']);
+        self::assertSame(16, $held->limits('decisionnode-moe-0.9.0')['sessions']['max_window']);
+        self::assertSame(16, $held->limits('decisionnode-moe')['sessions']['max_window']);
+        self::assertSame('decisionnode-moe', $held->limits('decisionnode-moe')['model']);
+        self::assertSame(0, $held->limits('decisionnode-flash')['number_max_grid_values']);
         self::assertSame([], $held->limits('decisionnode-9'));
     }
 
@@ -59,9 +59,9 @@ final class ConsistencyTest extends TestCase
         $refusals = [
             ['decide', ['questions' => ['c' => choice('?', [])]], BadRequestError::class],
             ['decide', ['questions' => ['n' => number('?', 60, 50)]], ValidationError::class],
-            ['decide', ['questions' => ['n' => number('?')], 'model' => 'decisionnode-flash-latest'], BadRequestError::class],
-            ['open_session', ['questions' => ['a' => truth('?')], 'model' => 'decisionnode-latest', 'window' => 17], ValidationError::class],
-            ['openSession', ['questions' => ['a' => truth('?')], 'model' => 'decisionnode-1.0-flash'], BadRequestError::class],
+            ['decide', ['questions' => ['n' => number('?')], 'model' => 'decisionnode-flash'], BadRequestError::class],
+            ['open_session', ['questions' => ['a' => truth('?')], 'model' => 'decisionnode-moe', 'window' => 17], ValidationError::class],
+            ['openSession', ['questions' => ['a' => truth('?')], 'model' => 'decisionnode-flash'], BadRequestError::class],
             ['batches.add', ['batch_id' => 'b', 'requests' => []], BadRequestError::class],
             ['decide', ['questions' => ['q' => truth('?')], 'images' => [Image::fromUrl('u', 'https://example.com:8443/a.jpg')]], BadRequestError::class],
         ];

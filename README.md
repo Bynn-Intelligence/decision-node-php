@@ -340,11 +340,11 @@ Booster calls are billed one per booster and image read with status `ok`, at the
 
 ## Fallback
 
-When no worker can take a request for `decisionnode-1.0` at once, the API answers it with `decisionnode-1.0-flash` rather than make it wait. `$d->model` is then the model that answered, and `$d->fallback` says so: a `Fallback` with `servedModel` and `requestedModel`, from the `x-decisionnode-fallback` and `x-decisionnode-requested-model` headers; on an ordinary answer it is `null`. To have such a request wait for its own model instead, pass `fallback: false` (the helpers, `decideMany`'s requests and `BatchRequest` take it too): it then gets the 529, an `OverloadedError` retried like any other. Left out, nothing is sent and the API's default applies.
+When no worker can take a request for `decisionnode-moe` at once, the API answers it with `decisionnode-flash` rather than make it wait. `$d->model` is then the model that answered, and `$d->fallback` says so: a `Fallback` with `servedModel` and `requestedModel`, from the `x-decisionnode-fallback` and `x-decisionnode-requested-model` headers; on an ordinary answer it is `null`. To have such a request wait for its own model instead, pass `fallback: false` (the helpers, `decideMany`'s requests and `BatchRequest` take it too): it then gets the 529, an `OverloadedError` retried like any other. Left out, nothing is sent and the API's default applies.
 
 ## Fine-tuned models
 
-A model you fine-tune on your own labelled decisions, in the console, is called by its name as `$model`: `decisionnode-1.0-flash@acme/fraud` (the version deployed most recently) or `decisionnode-1.0-flash@acme/fraud:3` (one version). The name is sent as given; only your workspace's keys can call it, and a name the API does not know for your workspace is a `BadRequestError`, "Unknown model: <name>". `$d->model` carries the name pinned to the version that answered. `models()` lists your fine-tuned models beside the catalogue's, with `fineTuned` true (null for a catalogue model), `base` (the model it was trained from), `adapterVersion` (its version number) and `status`: `deployed` answers decisions, `ready` is trained and not deployed.
+A model you fine-tune on your own labelled decisions, in the console, is called by its name as `$model`: `decisionnode-flash@acme/fraud` (the version deployed most recently) or `decisionnode-flash@acme/fraud:3` (one version). The name is sent as given; only your workspace's keys can call it, and a name the API does not know for your workspace is a `BadRequestError`, "Unknown model: <name>". `$d->model` carries the name pinned to the version that answered. `models()` lists your fine-tuned models beside the catalogue's, with `fineTuned` true (null for a catalogue model), `base` (the model it was trained from), `adapterVersion` (its version number) and `status`: `deployed` answers decisions, `ready` is trained and not deployed.
 
 ## Sessions
 
@@ -520,7 +520,7 @@ $d->raw['safety'];   // the same scores, from the body
 |---|---|---|
 | `apiKey` | `DECISIONNODE_API_KEY` | none: a call without a key fails before sending |
 | `baseUrl` | `DECISIONNODE_BASE_URL` | `https://api.decisionnode.com`; must be `https` (plain `http` only for `localhost`, `127.0.0.1` and `::1`) |
-| `model` | `DECISIONNODE_MODEL` | `decisionnode-latest` |
+| `model` | `DECISIONNODE_MODEL` | `decisionnode-moe` |
 | `timeout` | | `10.0` seconds for a whole attempt; above 0 |
 | `maxRetries` | | `2`; 0 or more |
 | `headers` | | extra headers sent with every API request and session handshake (never with an image upload's `PUT` to storage) |
@@ -530,12 +530,12 @@ $d->raw['safety'];   // the same scores, from the body
 | `uploadTimeout` | | `60.0` seconds for one storage `PUT` of an image upload; above 0 |
 | `clock` | | the system clock: a `Closure` returning the Unix time in seconds, which upload URLs and cached uploads are judged by (for tests) |
 
-An argument wins over the environment, which wins over the default. An empty string counts as not given, for the client's arguments and for the `$model` of a call. A base URL that is not `https`, from an argument or from the environment, throws `InvalidArgumentException` when the client is made, so the API key never travels unencrypted; plain `http` is accepted only for this machine (`localhost`, `127.0.0.1`, `::1`), for a local test server. Pin a model per client or per call with `decisionnode-1.0` or `decisionnode-1.0-flash`; `decisionnode-latest` and `decisionnode-flash-latest` follow the newest release. A [fine-tuned model](#fine-tuned-models) of yours goes in `model` too.
+An argument wins over the environment, which wins over the default. An empty string counts as not given, for the client's arguments and for the `$model` of a call. A base URL that is not `https`, from an argument or from the environment, throws `InvalidArgumentException` when the client is made, so the API key never travels unencrypted; plain `http` is accepted only for this machine (`localhost`, `127.0.0.1`, `::1`), for a local test server. The models are `decisionnode-moe`, the main model, and `decisionnode-flash`, the fast one: each always means its current release. A decision's `model` names the pinned id that answered, `decisionnode-<family>-<version>`; to pin a version, take its id from `models()` rather than writing one down. The earlier ids `decisionnode-latest`, `decisionnode-flash-latest`, `decisionnode-1.0` and `decisionnode-1.0-flash` are still accepted. A [fine-tuned model](#fine-tuned-models) of yours goes in `model` too.
 
 ```php
 $dn = new DecisionNode(
     apiKey: 'your-api-key',
-    model: 'decisionnode-flash-latest',
+    model: 'decisionnode-flash',
     headers: ['x-team' => 'billing'], // sent with every request
 );
 ```

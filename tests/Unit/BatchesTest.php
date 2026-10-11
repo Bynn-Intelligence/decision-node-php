@@ -47,7 +47,7 @@ final class BatchesTest extends TestCase
         $dn = $this->client([self::batch('draft', [], 201)]);
         $batch = $dn->batches->create([
             ['custom_id' => 't1', 'state' => 'I was charged twice.', 'questions' => ['route' => choice('Where?', ['billing', 'bug'])]],
-            new BatchRequest('t2', ['refund' => truth('Refund?')], model: 'decisionnode-flash-latest'),
+            new BatchRequest('t2', ['refund' => truth('Refund?')], model: 'decisionnode-flash'),
         ]);
         self::assertInstanceOf(Batch::class, $batch);
         self::assertSame('draft', $batch->state);
@@ -56,8 +56,8 @@ final class BatchesTest extends TestCase
         self::assertSame('application/x-ndjson', $sent->getHeaderLine('Content-Type'));
         $lines = explode("\n", rtrim((string) $sent->getBody(), "\n"));
         self::assertCount(2, $lines);
-        self::assertSame('{"custom_id":"t1","model":"decisionnode-latest","state":"I was charged twice.","questions":{"route":{"type":"choice","instructions":"Where?","criteria":{"billing":null,"bug":null}}}}', $lines[0]);
-        self::assertSame('{"custom_id":"t2","model":"decisionnode-flash-latest","state":"","questions":{"refund":{"type":"truth","instructions":"Refund?"}}}', $lines[1]);
+        self::assertSame('{"custom_id":"t1","model":"decisionnode-moe","state":"I was charged twice.","questions":{"route":{"type":"choice","instructions":"Where?","criteria":{"billing":null,"bug":null}}}}', $lines[0]);
+        self::assertSame('{"custom_id":"t2","model":"decisionnode-flash","state":"","questions":{"refund":{"type":"truth","instructions":"Refund?"}}}', $lines[1]);
     }
 
     public function testAnEmptyDraftHasAnEmptyBody(): void
@@ -165,7 +165,7 @@ final class BatchesTest extends TestCase
 
     public function testResultsLines(): void
     {
-        $text = '{"custom_id":"a","status":200,"body":{"model":"decisionnode-1.0","answers":{"q":{"type":"truth","truth":0.8200000000000001}},"usage":{"input_tokens":4,"output_tokens":0}},"headers":{"X-Request-Id":"req_1"}}' . "\n"
+        $text = '{"custom_id":"a","status":200,"body":{"model":"decisionnode-moe","answers":{"q":{"type":"truth","truth":0.8200000000000001}},"usage":{"input_tokens":4,"output_tokens":0}},"headers":{"X-Request-Id":"req_1"}}' . "\n"
             . '{"custom_id":"b","status":400,"body":{"detail":{"error_type":"api_usage_error","message":"Unknown model"}},"headers":{"x-decisionnode-error":"unknown model"}}' . "\n"
             . '{"custom_id":"c","status":"expired","body":null,"headers":{}}' . "\n";
         $dn = $this->client([new Response(200, ['Content-Type' => 'application/x-ndjson'], $text)]);

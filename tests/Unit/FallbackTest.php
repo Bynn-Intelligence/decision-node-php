@@ -26,15 +26,15 @@ final class FallbackTest extends TestCase
 
     public function testAFallbackAnswerAndAnOrdinaryOne(): void
     {
-        $body = ['model' => 'decisionnode-1.0-flash', 'answers' => ['q' => ['type' => 'truth', 'truth' => 0.5]]];
+        $body = ['model' => 'decisionnode-flash', 'answers' => ['q' => ['type' => 'truth', 'truth' => 0.5]]];
         $dn = $this->client([
-            self::json(200, $body, ['x-decisionnode-fallback' => 'decisionnode-1.0-flash', 'x-decisionnode-requested-model' => 'decisionnode-1.0']),
+            self::json(200, $body, ['x-decisionnode-fallback' => 'decisionnode-flash', 'x-decisionnode-requested-model' => 'decisionnode-moe']),
             self::json(200, $body),
         ]);
-        $d = $dn->decide(questions: ['q' => truth('?')], model: 'decisionnode-1.0');
-        self::assertSame('decisionnode-1.0-flash', $d->model);
+        $d = $dn->decide(questions: ['q' => truth('?')], model: 'decisionnode-moe');
+        self::assertSame('decisionnode-flash', $d->model);
         self::assertNotNull($d->fallback);
-        self::assertSame(['decisionnode-1.0-flash', 'decisionnode-1.0'], [$d->fallback->servedModel, $d->fallback->requestedModel]);
+        self::assertSame(['decisionnode-flash', 'decisionnode-moe'], [$d->fallback->servedModel, $d->fallback->requestedModel]);
         self::assertNull($dn->decide(questions: ['q' => truth('?')])->fallback);
     }
 }

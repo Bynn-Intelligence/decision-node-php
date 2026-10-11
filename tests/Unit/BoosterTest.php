@@ -35,7 +35,7 @@ final class BoosterTest extends TestCase
     public function testBoostersWireForm(): void
     {
         $dn = $this->client([self::truthBody(), self::truthBody(), self::truthBody()]);
-        $dn->decide(questions: ['q' => truth('?')], model: 'decisionnode-1.0-flash@acme/fraud:3', boosters: [
+        $dn->decide(questions: ['q' => truth('?')], model: 'decisionnode-flash@acme/fraud:3', boosters: [
             Booster::AGE,
             new Booster(Booster::AI_GENERATED, images: ['c3d4'], require: true),
             new Booster('objects', options: ['min' => 0.5]),
@@ -44,7 +44,7 @@ final class BoosterTest extends TestCase
             new Booster('objects_v2'),
         ]);
         self::assertSame(
-            '{"model":"decisionnode-1.0-flash@acme/fraud:3","state":"","questions":{"q":{"type":"truth","instructions":"?"}},'
+            '{"model":"decisionnode-flash@acme/fraud:3","state":"","questions":{"q":{"type":"truth","instructions":"?"}},'
             . '"boosters":["age",{"name":"ai_generated","images":["c3d4"],"require":true},{"name":"objects","options":{"min":0.5}},'
             . '{"name":"text","require":false,"options":{}},{"name":"faces"},"objects_v2"]}',
             (string) $this->sent()->getBody(),
@@ -53,7 +53,7 @@ final class BoosterTest extends TestCase
         // Left out or empty: no boosters key, byte for byte.
         $dn->decide(questions: ['q' => truth('?')]);
         $dn->decide(questions: ['q' => truth('?')], boosters: []);
-        $plain = '{"model":"decisionnode-latest","state":"","questions":{"q":{"type":"truth","instructions":"?"}}}';
+        $plain = '{"model":"decisionnode-moe","state":"","questions":{"q":{"type":"truth","instructions":"?"}}}';
         self::assertSame($plain, (string) $this->sent(1)->getBody());
         self::assertSame($plain, (string) $this->sent(2)->getBody());
     }
@@ -104,7 +104,7 @@ final class BoosterTest extends TestCase
     public function testEvidenceAndUsage(): void
     {
         $dn = $this->client([self::json(200, [
-            'model' => 'decisionnode-1.0',
+            'model' => 'decisionnode-moe',
             'answers' => ['q' => ['type' => 'truth', 'truth' => 0.97]],
             'evidence' => self::EVIDENCE,
             'usage' => ['input_tokens' => 341, 'output_tokens' => 0, 'booster_tokens' => 72, 'boosters' => 3],
@@ -229,19 +229,19 @@ final class BoosterTest extends TestCase
     {
         $dn = $this->client([
             self::json(200, ['models' => [
-                ['name' => 'decisionnode-1.0-flash', 'version' => 'decisionnode-1.0-flash'],
-                ['name' => 'decisionnode-1.0-flash@acme/fraud:3', 'version' => 'decisionnode-1.0-flash@acme/fraud:3', 'description' => 'Claims fraud', 'fine_tuned' => true, 'base' => 'decisionnode-1.0-flash', 'adapter_version' => 3, 'status' => 'deployed'],
-                ['name' => 'decisionnode-1.0-flash@acme/fraud:4', 'fine_tuned' => true, 'base' => 'decisionnode-1.0-flash', 'adapter_version' => 4, 'status' => 'ready'],
+                ['name' => 'decisionnode-flash', 'version' => 'decisionnode-flash'],
+                ['name' => 'decisionnode-flash@acme/fraud:3', 'version' => 'decisionnode-flash@acme/fraud:3', 'description' => 'Claims fraud', 'fine_tuned' => true, 'base' => 'decisionnode-flash', 'adapter_version' => 3, 'status' => 'deployed'],
+                ['name' => 'decisionnode-flash@acme/fraud:4', 'fine_tuned' => true, 'base' => 'decisionnode-flash', 'adapter_version' => 4, 'status' => 'ready'],
             ]]),
-            self::json(200, ['model' => 'decisionnode-1.0-flash@acme/fraud:3', 'answers' => ['q' => ['type' => 'truth', 'truth' => 0.5]]]),
+            self::json(200, ['model' => 'decisionnode-flash@acme/fraud:3', 'answers' => ['q' => ['type' => 'truth', 'truth' => 0.5]]]),
         ]);
         [$catalogue, $deployed, $ready] = $dn->models();
         self::assertSame([null, null, null, null], [$catalogue->fineTuned, $catalogue->base, $catalogue->adapterVersion, $catalogue->status]);
-        self::assertSame([true, 'decisionnode-1.0-flash', 3, 'deployed', 'decisionnode-1.0-flash@acme/fraud:3'], [$deployed->fineTuned, $deployed->base, $deployed->adapterVersion, $deployed->status, $deployed->version]);
+        self::assertSame([true, 'decisionnode-flash', 3, 'deployed', 'decisionnode-flash@acme/fraud:3'], [$deployed->fineTuned, $deployed->base, $deployed->adapterVersion, $deployed->status, $deployed->version]);
         self::assertSame(['ready', 4], [$ready->status, $ready->adapterVersion]);
 
-        $d = $dn->decide(questions: ['q' => truth('?')], model: 'decisionnode-1.0-flash@acme/fraud');
-        self::assertSame('decisionnode-1.0-flash@acme/fraud:3', $d->model);
-        self::assertSame('decisionnode-1.0-flash@acme/fraud', $this->sentBody(1)->model);
+        $d = $dn->decide(questions: ['q' => truth('?')], model: 'decisionnode-flash@acme/fraud');
+        self::assertSame('decisionnode-flash@acme/fraud:3', $d->model);
+        self::assertSame('decisionnode-flash@acme/fraud', $this->sentBody(1)->model);
     }
 }

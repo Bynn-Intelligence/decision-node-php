@@ -187,7 +187,7 @@ final class PointBoxTest extends TestCase
 
     public function testHeldImageLimitUnderImages(): void
     {
-        $dn = $this->client([self::json(200, ['models' => [['name' => 'decisionnode-latest', 'description' => '', 'release_date' => '2026-10-08', 'images' => ['max_images' => 2]]]])]);
+        $dn = $this->client([self::json(200, ['models' => [['name' => 'decisionnode-moe', 'description' => '', 'release_date' => '2026-10-08', 'images' => ['max_images' => 2]]]])]);
         $dn->models();
         try {
             $dn->decide('s', ['q' => truth('?')], [self::belt('a'), self::belt('b'), self::belt('c')]);

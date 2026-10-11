@@ -6,7 +6,7 @@ namespace Bynn\DecisionNode;
 
 /**
  * How a request was answered by another model than the one it asked for:
- * `decisionnode-1.0-flash` for `decisionnode-1.0` when no worker could take
+ * `decisionnode-flash` for `decisionnode-moe` when no worker could take
  * the request at once. Read from the `x-decisionnode-fallback` and
  * `x-decisionnode-requested-model` response headers.
  */

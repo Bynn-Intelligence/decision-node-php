@@ -16,13 +16,14 @@ Implements version 1.3 of the DecisionNode SDK specification (`SPEC_VERSION` `"1
 
 - The API's 25 MiB body limit: `RequestTooLargeError`. A request body, or a batch line, over 26,214,400 bytes is refused before anything is sent or uploaded (measured as it would go out, an image to upload by its upload id), and the API's 413 is the same error, never retried. Inline images and video frames count toward it; uploaded images and URLs do not, and local images at or above the inline threshold are uploaded.
 
-- Fallback: a `fallback` option on `decide`, the helpers (and their `Async` forms), `decideMany`'s requests and `BatchRequest`, sent as `"fallback": true | false` only when given; `fallback: false` makes a request for `decisionnode-1.0` wait for its own model (the 529, retried as any) rather than be answered by `decisionnode-1.0-flash`. `Decision::$fallback`, a `Fallback` (`servedModel`, `requestedModel`) from the `x-decisionnode-fallback` and `x-decisionnode-requested-model` headers, null on an ordinary answer.
+- Fallback: a `fallback` option on `decide`, the helpers (and their `Async` forms), `decideMany`'s requests and `BatchRequest`, sent as `"fallback": true | false` only when given; `fallback: false` makes a request for `decisionnode-moe` wait for its own model (the 529, retried as any) rather than be answered by `decisionnode-flash`. `Decision::$fallback`, a `Fallback` (`servedModel`, `requestedModel`) from the `x-decisionnode-fallback` and `x-decisionnode-requested-model` headers, null on an ordinary answer.
 
 - An error whose body is not JSON (an edge's or a proxy's page, or no body) is classed by its status alone, with `errorType` null, `requestId` and `reason` from their headers, nothing read from the body (`body` is null), and the message `HTTP <status> <text>` from a fixed table (`HTTP 413 Content Too Large`), then ` (request id <id>)` when sent.
 - An image id over 64 characters (code points) is refused before anything is sent: "Image <n>: its id is longer than 64 characters.", after the empty-id check and before the duplicate check, on `decide`, the helpers, `decideMany` (for the whole call), batch lines and `checkRequest`; a session frame's image goes without its id and is not checked for it.
 
 ### Changed
 
+- The default model is `decisionnode-moe` (it was `decisionnode-latest`), the family id that always means the current release; `decisionnode-flash` is the fast one. A pinned id is `decisionnode-<family>-<version>`, read from the model list, and an answer names the pinned id that answered. The earlier ids stay accepted by the API.
 - The booster errors map to the existing classes: `booster_unknown` and `booster_input_mismatch` are a `BadRequestError`, `booster_not_enabled` a `PermissionDeniedError`, and `booster_unavailable` an `OverloadedError`, retried like any 529.
 - The conformance tests run suite 1.11.
 
