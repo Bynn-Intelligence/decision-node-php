@@ -225,6 +225,18 @@ final class BoosterTest extends TestCase
         }
     }
 
+    public function testNewBoosterOptions(): void
+    {
+        $dn = $this->client([self::json(400, ['detail' => ['error_type' => 'booster_unknown', 'message' => 'Unknown booster: ocr']])]);
+        try {
+            $dn->decide(questions: ['q' => truth('?')], boosters: [Booster::FACE_DETECTION, Booster::ocr('What is the total on the receipt?'), Booster::wantedPerson(0.9)]);
+            self::fail('booster_unknown');
+        } catch (BadRequestError $e) {
+            self::assertSame('booster_unknown', $e->errorType);
+        }
+        self::assertStringEndsWith(',"boosters":["face_detection",{"name":"ocr","options":{"prompt":"What is the total on the receipt?"}},{"name":"wanted_person","options":{"threshold":0.9}}]}', (string) $this->sent()->getBody());
+    }
+
     public function testFineTunedModels(): void
     {
         $dn = $this->client([

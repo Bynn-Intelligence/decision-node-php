@@ -284,6 +284,9 @@ A booster is a specialist model that reads the request's images before the decis
 |---|---|---|
 | `age` (`Booster::AGE`) | A picture of a person; the largest face is read | `AgeReading`: `image`, `faces`, and `ageYears`, `low`, `high` (the range, in years) and `confidence`, each `null` when `faces` is 0 |
 | `ai_generated` (`Booster::AI_GENERATED`) | Any picture | `AiGeneratedReading`: `image`, `generated` (the probability that an image generator made it), `confidence`, `method` (`inference`, read from the pixels, or `c2pa`, the file's Content Credentials say so), `topGenerator` (`['name' => ..., 'probability' => ...]`, `null` unless the picture reads as likely generated, and on every `c2pa` reading), `c2paSigner` (who signed the file's Content Credentials, `null` unless they are trusted) and `c2pa` (`untrusted` when the file carries Content Credentials that are not trusted, else `null`) |
+| `face_detection` (`Booster::FACE_DETECTION`) | Any picture | The faces found, as an `UnknownReading` whose `raw` holds the fields in this version |
+| `wanted_person` (`Booster::WANTED_PERSON`) | A picture of a person | Whether a face matches an entry of a wanted-persons list: a match score and the entry's reference id, never a name or any personal detail, as an `UnknownReading` in this version. Off unless enabled for your workspace. Option `threshold`: `Booster::wantedPerson(0.9)` |
+| `ocr` (`Booster::OCR`) | Any picture | The text in the picture, or the answer to a prompt, as an `UnknownReading` in this version. Option `prompt`, at most 500 characters: `Booster::ocr('What is the total?')` |
 
 ```php
 use Bynn\DecisionNode\{AgeReading, AiGeneratedReading, Image};

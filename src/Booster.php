@@ -27,6 +27,15 @@ final class Booster implements \JsonSerializable
     /** Reads how likely a picture was made by an image generator, and who signed its Content Credentials. */
     public const AI_GENERATED = 'ai_generated';
 
+    /** Finds the faces in a picture. */
+    public const FACE_DETECTION = 'face_detection';
+
+    /** Reads whether a face matches an entry of a wanted-persons list; off unless enabled for the workspace. */
+    public const WANTED_PERSON = 'wanted_person';
+
+    /** Reads the text in a picture, or answers a prompt about it. */
+    public const OCR = 'ocr';
+
     /** @var list<string>|null */
     public readonly ?array $images;
 
@@ -54,6 +63,28 @@ final class Booster implements \JsonSerializable
             }
             $this->images = $list;
         }
+    }
+
+    /**
+     * The ocr booster with a prompt: what to read or answer from the
+     * picture's text, at most 500 characters (the API's limit, not checked
+     * here).
+     *
+     * @param iterable<string>|null $images
+     */
+    public static function ocr(string $prompt, ?iterable $images = null, ?bool $require = null): self
+    {
+        return new self(self::OCR, $images, $require, ['prompt' => $prompt]);
+    }
+
+    /**
+     * The wanted_person booster with a match threshold.
+     *
+     * @param iterable<string>|null $images
+     */
+    public static function wantedPerson(int|float $threshold, ?iterable $images = null, ?bool $require = null): self
+    {
+        return new self(self::WANTED_PERSON, $images, $require, ['threshold' => $threshold]);
     }
 
     /**
