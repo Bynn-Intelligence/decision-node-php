@@ -284,9 +284,6 @@ A booster is a specialist model that reads the request's images before the decis
 |---|---|---|
 | `age` (`Booster::AGE`) | A picture of a person; the largest face is read | `AgeReading`: `image`, `faces`, and `ageYears`, `low`, `high` (the range, in years) and `confidence`, each `null` when `faces` is 0 |
 | `ai_generated` (`Booster::AI_GENERATED`) | Any picture | `AiGeneratedReading`: `image`, `generated` (the probability that an image generator made it), `confidence`, `method` (`inference`, read from the pixels, or `c2pa`, the file's Content Credentials say so), `topGenerator` (`['name' => ..., 'probability' => ...]`, `null` unless the picture reads as likely generated, and on every `c2pa` reading), `c2paSigner` (who signed the file's Content Credentials, `null` unless they are trusted) and `c2pa` (`untrusted` when the file carries Content Credentials that are not trusted, else `null`) |
-| `face_detection` (`Booster::FACE_DETECTION`) | Any picture | `FaceDetectionReading`: `image`, `faces` (how many faces it found) and `detections`, each face's `box` (`x1`, `y1`, `x2`, `y2`, in pixels, or fractions when every point and box question asks for normalized units) and `confidence`; the list is capped at 64, so `faces` can be larger |
-| `wanted_person` (`Booster::WANTED_PERSON`) | A picture of a person | `WantedPersonReading`: `image`, `faces` (how many were checked) and `matches`, each matching face's `box`, `score` and `reference`, the list entry's reference id, never a name or any personal detail. Off unless enabled for your workspace. Option `threshold`, 0 to 1: `Booster::wantedPerson(0.8)` |
-| `ocr` (`Booster::OCR`) | Any picture | `OcrReading`: `image`, `text` (the text in the picture, or the answer to the prompt; `''` when it shows none) and `truncated` (true when the reading was cut at the context limit). Option `prompt`, a task, an instruction or a JSON schema of at most 2,000 characters: `Booster::ocr('What is the total?')` |
 
 ```php
 use Bynn\DecisionNode\{AgeReading, AiGeneratedReading, Image};
@@ -499,7 +496,7 @@ Each attempt times out after 10 seconds, counted over the whole attempt: from se
 $dn = new DecisionNode(timeout: 5.0, maxRetries: 4);
 ```
 
-A decision whose boosters name `ocr` reads for longer: each attempt has 30 seconds (`DecisionNode::OCR_TIMEOUT`) unless you set `timeout`, which is then used as given. It is never retried after a timeout, because the server finishes the timed-out attempt and may bill it; its other retries stay. Give such requests a timeout of at least 30 seconds.
+A request whose boosters name `ocr` has 30 seconds per attempt (`DecisionNode::OCR_TIMEOUT`) unless you set `timeout`, which is then used as given. It is never retried after a timeout, because the server finishes the timed-out attempt and may bill it; its other retries stay. Give such requests a timeout of at least 30 seconds.
 
 `timeout` must be above 0 and `maxRetries` 0 or more; anything else throws `InvalidArgumentException`. There is no setting for an unlimited timeout.
 
@@ -526,7 +523,7 @@ $d->raw['safety'];   // the same scores, from the body
 | `apiKey` | `DECISIONNODE_API_KEY` | none: a call without a key fails before sending |
 | `baseUrl` | `DECISIONNODE_BASE_URL` | `https://api.decisionnode.com`; must be `https` (plain `http` only for `localhost`, `127.0.0.1` and `::1`) |
 | `model` | `DECISIONNODE_MODEL` | `decisionnode-moe` |
-| `timeout` | | `10.0` seconds for a whole attempt (30 for a decision naming the `ocr` booster); above 0 |
+| `timeout` | | `10.0` seconds for a whole attempt (30 for a request naming `ocr`); above 0 |
 | `maxRetries` | | `2`; 0 or more |
 | `headers` | | extra headers sent with every API request and session handshake (never with an image upload's `PUT` to storage) |
 | `httpClient` | | your own `GuzzleHttp\Client` (rules below) |
