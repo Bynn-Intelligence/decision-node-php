@@ -35,7 +35,11 @@ final class CollectionsTest extends TestCase
         self::assertSame([self::COL, false, 0, null], [$created->id, $created->public, $created->items, $created->deletion]);
         self::assertSame(['POST', '/v1/collections', '{"type":"face","name":"Staff"}'], [$this->sent(0)->getMethod(), $this->sent(0)->getUri()->getPath(), (string) $this->sent(0)->getBody()]);
 
+        $uuid4 = '/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/';
+        self::assertMatchesRegularExpression($uuid4, $this->sent(0)->getHeaderLine('Idempotency-Key'));
+
         $list = $dn->collections->list();
+        self::assertSame('', $this->sent(1)->getHeaderLine('Idempotency-Key'));
         self::assertCount(2, $list);
         self::assertContainsOnlyInstancesOf(Collection::class, $list);
         self::assertSame(['storage_unpaid', true], [$list[0]->deletion['reason'] ?? null, $list[1]->public]);
@@ -94,6 +98,8 @@ final class CollectionsTest extends TestCase
             self::json(404, ['detail' => ['error_type' => 'collection_not_found', 'message' => 'Collection not found: x.']]),
             self::json(409, ['detail' => ['error_type' => 'collections_limit_reached', 'message' => 'This workspace has reached its limit of 100 collections.']]),
             self::json(500, ['detail' => 'boom']),
+            self::json(500, ['detail' => 'boom']),
+            self::json(500, ['detail' => 'boom']),
             self::json(200, ['collections' => 'none']),
         ]);
         try {
@@ -108,15 +114,38 @@ final class CollectionsTest extends TestCase
         } catch (DecisionNodeError $e) {
             self::assertSame([409, 'collections_limit_reached', DecisionNodeError::class], [$e->status, $e->errorType, get_class($e)]);
         }
-        // Create is not retried on a 500: one request, then the error.
+        // Create carries its key, so a 500 is retried like any call; after
+        // the retries, the error.
         try {
             $dn->collections->create('Staff');
             self::fail('500');
         } catch (ServerError $e) {
             self::assertSame(500, $e->status);
         }
-        self::assertCount(3, $this->history);
+        self::assertCount(5, $this->history);
         $this->expectException(ServerError::class);
         $dn->collections->list();
+    }
+
+    public function testCreateRetriedWithItsKey(): void
+    {
+        $dn = $this->client([
+            self::json(500, ['detail' => ['error_type' => 'api_error', 'message' => 'Something went wrong on our side.']]),
+            self::json(409, ['detail' => ['error_type' => 'idempotency_in_progress', 'message' => 'A request with this Idempotency-Key is still running.']], ['retry-after-ms' => '5']),
+            self::json(201, ['id' => self::COL, 'type' => 'face', 'name' => 'Staff', 'public' => false, 'items' => 0]),
+            self::json(409, ['detail' => ['error_type' => 'idempotency_key_reused', 'message' => 'This Idempotency-Key was already used with a different request.']]),
+        ], ['maxRetries' => 3]);
+        $dn->collections->create('Staff');
+        self::assertCount(3, $this->history);
+        $key = $this->sent(0)->getHeaderLine('Idempotency-Key');
+        self::assertSame([$key, $key], [$this->sent(1)->getHeaderLine('Idempotency-Key'), $this->sent(2)->getHeaderLine('Idempotency-Key')]);
+        try {
+            $dn->collections->create('Staff');
+            self::fail('no error');
+        } catch (DecisionNodeError $e) {
+            self::assertSame([409, 'idempotency_key_reused'], [$e->status, $e->errorType]);
+        }
+        self::assertCount(4, $this->history);
+        self::assertNotSame($key, $this->sent(3)->getHeaderLine('Idempotency-Key'));
     }
 }

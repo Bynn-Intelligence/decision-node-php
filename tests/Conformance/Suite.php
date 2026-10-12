@@ -588,6 +588,9 @@ final class Suite
         if (isset($exp->request_counts)) {
             self::checkCounts($exp->request_counts, $log);
         }
+        if (isset($exp->same_header)) {
+            self::checkSameHeader($exp->same_header, $log);
+        }
         if (isset($exp->session_events)) {
             self::checkEvents($exp->session_events, $events);
         }
@@ -780,6 +783,42 @@ final class Suite
                 $checks->method = $spec->method;
                 self::checkRequest($checks, $rec, sprintf('request sequence[%d]', $i), anyBody: true);
             }
+        }
+    }
+
+    /**
+     * Every logged request matching path_suffix and method (at least min,
+     * default 2) carries the header with one and the same value, matching
+     * pattern when given: an Idempotency-Key kept across a call's retries.
+     *
+     * @param list<\stdClass> $log
+     */
+    private static function checkSameHeader(\stdClass $spec, array $log): void
+    {
+        $name = strtolower($spec->name);
+        $values = [];
+        foreach ($log as $r) {
+            if (isset($spec->path_suffix) && !str_ends_with($r->path, $spec->path_suffix)) {
+                continue;
+            }
+            if (isset($spec->method) && $r->method !== $spec->method) {
+                continue;
+            }
+            $headers = array_change_key_case(get_object_vars($r->headers), CASE_LOWER);
+            if (!isset($headers[$name])) {
+                throw new Fail(sprintf('same_header %s: an attempt of %s %s carries none', $name, $r->method, $r->path));
+            }
+            $values[] = $headers[$name];
+        }
+        $least = $spec->min ?? 2;
+        if (count($values) < $least) {
+            throw new Fail(sprintf('same_header %s: expected at least %d attempts, got %d', $name, $least, count($values)));
+        }
+        if (count(array_unique($values)) !== 1) {
+            throw new Fail(sprintf('same_header %s: expected one value on every attempt, got %s', $name, json_encode($values)));
+        }
+        if (isset($spec->pattern) && !self::matches($spec->pattern, $values[0])) {
+            throw new Fail(sprintf('same_header %s: %s does not match %s', $name, $values[0], $spec->pattern));
         }
     }
 

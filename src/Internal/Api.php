@@ -37,6 +37,13 @@ final class Api
     public const RETRY_SESSION_OPEN = 'session_open';
 
     /**
+     * A call that carries its own Idempotency-Key, the same on every attempt,
+     * so the server applies it once however often it is sent: retried as
+     * the default, and also on a 409 idempotency_in_progress, after its wait.
+     */
+    public const RETRY_IDEMPOTENT = 'idempotent';
+
+    /**
      * @param array<string, string> $headers the caller's extra headers
      */
     public function __construct(
@@ -82,6 +89,7 @@ final class Api
         bool $stream = false,
         ?float $timeout = null,
         bool $retryAfterTimeout = true,
+        ?string $idempotencyKey = null,
     ): PromiseInterface {
         $timeout ??= $this->timeout;
         if ($this->apiKey === null) {
@@ -90,8 +98,8 @@ final class Api
             ));
         }
 
-        $attempt = function (int $n, ?float $wait) use (&$attempt, $method, $path, $body, $policy, $contentType, $json, $stream, $timeout, $retryAfterTimeout): PromiseInterface {
-            $request = $this->buildRequest($method, $path, $body, $contentType);
+        $attempt = function (int $n, ?float $wait) use (&$attempt, $method, $path, $body, $policy, $contentType, $json, $stream, $timeout, $retryAfterTimeout, $idempotencyKey): PromiseInterface {
+            $request = $this->buildRequest($method, $path, $body, $contentType, $idempotencyKey);
             $started = microtime(true) + ($wait ?? 0.0);
 
             return $this->transport->send($request, $wait, $timeout, false, $stream && !$json)->then(
@@ -155,6 +163,9 @@ final class Api
         }
         if ($policy === self::RETRY_SESSION_OPEN && $status === 429 && Errors::errorType($text) === 'session_limit_exceeded') {
             return false;
+        }
+        if ($policy === self::RETRY_IDEMPOTENT && $status === 409 && Errors::errorType($text) === 'idempotency_in_progress') {
+            return true;
         }
 
         return Retry::retryable($status);
@@ -238,7 +249,7 @@ final class Api
         return ['Authorization' => 'Bearer ' . $this->apiKey, 'User-Agent' => $this->userAgent] + $this->headers;
     }
 
-    private function buildRequest(string $method, string $path, ?string $body, string $contentType): Request
+    private function buildRequest(string $method, string $path, ?string $body, string $contentType, ?string $idempotencyKey = null): Request
     {
         $headers = [
             'Authorization' => 'Bearer ' . $this->apiKey,
@@ -251,6 +262,9 @@ final class Api
         $request = new Request($method, $this->baseUrl . $path, $headers, $body);
         foreach ($this->headers as $name => $value) {
             $request = $request->withHeader((string) $name, $value);
+        }
+        if ($idempotencyKey !== null) {
+            $request = $request->withHeader('Idempotency-Key', $idempotencyKey);
         }
 
         return $request;
