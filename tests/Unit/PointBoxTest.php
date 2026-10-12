@@ -247,16 +247,21 @@ final class PointBoxTest extends TestCase
         self::assertSame([], $this->history);
     }
 
-    public function testSeveralPlacesRefusedWhenTheHeldModelHasNone(): void
+    public function testSeveralPlacesSentWhenTheHeldModelHasNone(): void
     {
-        $dn = $this->client([self::json(200, ['models' => [['name' => 'decisionnode-moe', 'description' => '', 'release_date' => '2026-10-08']]])]);
+        $notSupported = ['type' => 'not_supported', 'loc' => ['body', 'questions', 'cars', 'box', 'max'], 'msg' => 'Several places are not supported by this model version', 'input' => 8];
+        $dn = $this->client([
+            self::json(200, ['models' => [['name' => 'decisionnode-moe', 'description' => '', 'release_date' => '2026-10-08']]]),
+            self::json(422, ['detail' => [$notSupported]]),
+        ]);
         $dn->models();
         try {
             $dn->decide(images: [self::belt()], questions: ['cars' => box('Every car.', max: 8)]);
             self::fail('no error');
         } catch (ValidationError $e) {
             self::assertSame(['not_supported', 'Several places are not supported by this model version', 8], [$e->entries[0]['type'], $e->entries[0]['msg'], $e->entries[0]['input']]);
+            self::assertSame(422, $e->status);
         }
-        self::assertCount(1, $this->history);
+        self::assertCount(2, $this->history);
     }
 }

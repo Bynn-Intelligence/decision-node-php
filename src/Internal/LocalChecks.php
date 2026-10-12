@@ -93,7 +93,6 @@ final class LocalChecks
             $probe['videos'] = array_fill(0, count($videos), ['id' => '', 'frames' => [['t' => 0]]]);
         }
         self::nesting($probe);
-        self::placesNotSupported($questions, $limits);
         $entries = [];
         if ($state !== null && !self::sdl($state)) {
             array_push($entries, ...self::sdlEntries(['body', 'state'], self::json($state)));
@@ -673,35 +672,6 @@ final class LocalChecks
         }
 
         return null;
-    }
-
-    /**
-     * The gateway's own 422 for a model version that answers one place only:
-     * with the model's models list entry held and no `places.max_places` in
-     * it, every point or box question carrying `max` is a `not_supported`
-     * entry, raised before the other checks. Nothing held, or a session's
-     * open, is left to the server.
-     *
-     * @param array<array-key, mixed> $questions
-     * @param array<string, mixed>    $limits
-     *
-     * @throws ValidationError
-     */
-    private static function placesNotSupported(array $questions, array $limits): void
-    {
-        $places = $limits['places'] ?? null;
-        if ($limits === [] || (is_array($places) && !empty($places['max_places']))) {
-            return;
-        }
-        $entries = [];
-        foreach ($questions as $id => $question) {
-            $q = self::json($question);
-            $type = $q instanceof \stdClass ? ($q->type ?? null) : null;
-            if (($type === 'point' || $type === 'box') && ($q->max ?? null) !== null) {
-                $entries[] = self::entry('not_supported', ['body', 'questions', (string) $id, $type, 'max'], 'Several places are not supported by this model version', $q->max);
-            }
-        }
-        self::raise($entries, null);
     }
 
     /**
