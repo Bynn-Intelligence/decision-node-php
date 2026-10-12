@@ -30,8 +30,8 @@ final class Booster implements \JsonSerializable
     /** Finds the faces in a picture. */
     public const FACE_DETECTION = 'face_detection';
 
-    /** Reads whether a face matches an entry of a wanted-persons list; off unless enabled for the workspace. */
-    public const WANTED_PERSON = 'wanted_person';
+    /** Matches the faces in a picture against a collection of faces: the workspace's own or a public one. */
+    public const FACE_RECOGNITION = 'face_recognition';
 
     /** Reads the text in a picture, or answers a prompt about it. */
     public const OCR = 'ocr';
@@ -78,13 +78,22 @@ final class Booster implements \JsonSerializable
     }
 
     /**
-     * The wanted_person booster with a match threshold.
+     * The face_recognition booster searching a collection: a public
+     * collection's name or the id of one of the workspace's own. A
+     * `$threshold` of 0 to 1 sets the lowest score a match may have; null
+     * leaves the server's default (0.5). Both are sent as given: the API
+     * checks them.
      *
      * @param iterable<string>|null $images
      */
-    public static function wantedPerson(int|float $threshold, ?iterable $images = null, ?bool $require = null): self
+    public static function faceRecognition(string $collection, int|float|null $threshold = null, ?iterable $images = null, ?bool $require = null): self
     {
-        return new self(self::WANTED_PERSON, $images, $require, ['threshold' => $threshold]);
+        $options = ['collection' => $collection];
+        if ($threshold !== null) {
+            $options['threshold'] = $threshold;
+        }
+
+        return new self(self::FACE_RECOGNITION, $images, $require, $options);
     }
 
     /**

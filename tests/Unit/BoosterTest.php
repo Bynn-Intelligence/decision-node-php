@@ -235,9 +235,14 @@ final class BoosterTest extends TestCase
                     ['image' => 'gate', 'faces' => 1, 'detections' => [['box' => ['x1' => 1, 'y1' => 2, 'x2' => 3], 'confidence' => 0.5]]],
                     ['image' => 'gate', 'faces' => 1],
                 ]],
-                'wanted_person' => ['status' => 'ok', 'results' => [
-                    ['image' => 'gate', 'faces' => 2, 'matches' => [['box' => ['x1' => 412, 'y1' => 188, 'x2' => 486, 'y2' => 274], 'score' => 0.93, 'reference' => 'wanted:2024-12345']]],
-                    ['image' => 'gate', 'faces' => 1, 'matches' => [['box' => ['x1' => 1, 'y1' => 2, 'x2' => 3, 'y2' => 4], 'score' => 0.9, 'reference' => 192]]],
+                'face_recognition' => ['status' => 'ok', 'results' => [
+                    ['image' => 'gate', 'faces' => 2, 'matches' => [
+                        ['box' => ['x1' => 412, 'y1' => 188, 'x2' => 486, 'y2' => 274], 'score' => 0.93, 'collection' => 'celebrities', 'reference' => 'celeb-00412', 'name' => 'A Public Figure'],
+                        ['box' => ['x1' => 5, 'y1' => 6, 'x2' => 7, 'y2' => 8], 'score' => 0.81, 'collection' => 'wanted-persons', 'reference' => 'wanted:2024-12345'],
+                    ]],
+                    ['image' => 'gate', 'faces' => 1, 'matches' => [['box' => ['x1' => 1, 'y1' => 2, 'x2' => 3, 'y2' => 4], 'score' => 0.9, 'collection' => 'celebrities', 'reference' => 192]]],
+                    ['image' => 'gate', 'faces' => 1, 'matches' => [['box' => ['x1' => 1, 'y1' => 2, 'x2' => 3, 'y2' => 4], 'score' => 0.9, 'reference' => 'r']]],
+                    ['image' => 'gate', 'faces' => 1, 'matches' => [['box' => ['x1' => 1, 'y1' => 2, 'x2' => 3, 'y2' => 4], 'score' => 0.9, 'collection' => 'c', 'reference' => 'r', 'label' => 7]]],
                 ]],
             ],
         ])])->decide(questions: ['q' => truth('?')]);
@@ -247,10 +252,15 @@ final class BoosterTest extends TestCase
         self::assertSame([70, 0.3219, 0.97], [$found->faces, $found->detections[0]['box']['x1'], $found->detections[0]['confidence']]);
         self::assertInstanceOf(UnknownReading::class, $noCorner);
         self::assertInstanceOf(UnknownReading::class, $noList);
-        [$match, $badReference] = $d->evidence['wanted_person']->results;
-        self::assertInstanceOf(\Bynn\DecisionNode\WantedPersonReading::class, $match);
-        self::assertSame([2, 'wanted:2024-12345', 274], [$match->faces, $match->matches[0]['reference'], $match->matches[0]['box']['y2']]);
+        [$match, $badReference, $noCollection, $badLabel] = $d->evidence['face_recognition']->results;
+        self::assertInstanceOf(\Bynn\DecisionNode\FaceRecognitionReading::class, $match);
+        self::assertSame(
+            [2, 'A Public Figure', null, 274, 'wanted:2024-12345', null, 'wanted-persons'],
+            [$match->faces, $match->matches[0]['name'], $match->matches[0]['label'], $match->matches[0]['box']['y2'], $match->matches[1]['reference'], $match->matches[1]['name'], $match->matches[1]['collection']],
+        );
         self::assertInstanceOf(UnknownReading::class, $badReference);
+        self::assertInstanceOf(UnknownReading::class, $noCollection);
+        self::assertInstanceOf(UnknownReading::class, $badLabel);
     }
 
     public function testOcrReading(): void
@@ -281,12 +291,12 @@ final class BoosterTest extends TestCase
     {
         $dn = $this->client([self::json(400, ['detail' => ['error_type' => 'booster_unknown', 'message' => 'Unknown booster: ocr']])]);
         try {
-            $dn->decide(questions: ['q' => truth('?')], boosters: [Booster::FACE_DETECTION, Booster::ocr('What is the total on the receipt?'), Booster::wantedPerson(0.9)]);
+            $dn->decide(questions: ['q' => truth('?')], boosters: [Booster::FACE_DETECTION, Booster::ocr('What is the total on the receipt?'), Booster::faceRecognition('celebrities', 0.9)]);
             self::fail('booster_unknown');
         } catch (BadRequestError $e) {
             self::assertSame('booster_unknown', $e->errorType);
         }
-        self::assertStringEndsWith(',"boosters":["face_detection",{"name":"ocr","options":{"prompt":"What is the total on the receipt?"}},{"name":"wanted_person","options":{"threshold":0.9}}]}', (string) $this->sent()->getBody());
+        self::assertStringEndsWith(',"boosters":["face_detection",{"name":"ocr","options":{"prompt":"What is the total on the receipt?"}},{"name":"face_recognition","options":{"collection":"celebrities","threshold":0.9}}]}', (string) $this->sent()->getBody());
     }
 
     public function testFineTunedModels(): void

@@ -9,8 +9,8 @@ namespace Bynn\DecisionNode;
  *
  * The `age` booster's readings are {@see AgeReading}s, the `ai_generated`
  * booster's {@see AiGeneratedReading}s, the `face_detection` booster's
- * {@see FaceDetectionReading}s, the `wanted_person` booster's
- * {@see WantedPersonReading}s and the `ocr` booster's {@see OcrReading}s. A reading of a booster this version of
+ * {@see FaceDetectionReading}s, the `face_recognition` booster's
+ * {@see FaceRecognitionReading}s and the `ocr` booster's {@see OcrReading}s. A reading of a booster this version of
  * the SDK does not know, or one with a field missing or of the wrong type, is
  * an {@see UnknownReading} holding its raw fields: the decision does not fail.
  */
@@ -39,7 +39,7 @@ abstract class Reading
             $booster === Booster::AI_GENERATED && AiGeneratedReading::wellFormed($raw) => new AiGeneratedReading($raw),
             $booster === Booster::OCR && OcrReading::wellFormed($raw) => new OcrReading($raw),
             $booster === Booster::FACE_DETECTION && FaceDetectionReading::wellFormed($raw) => new FaceDetectionReading($raw),
-            $booster === Booster::WANTED_PERSON && WantedPersonReading::wellFormed($raw) => new WantedPersonReading($raw),
+            $booster === Booster::FACE_RECOGNITION && FaceRecognitionReading::wellFormed($raw) => new FaceRecognitionReading($raw),
             default => new UnknownReading($raw),
         };
     }

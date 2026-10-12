@@ -39,7 +39,11 @@ use Bynn\DecisionNode\SessionClosed;
 use Bynn\DecisionNode\TruthAnswer;
 use Bynn\DecisionNode\UnknownAnswer;
 use Bynn\DecisionNode\Video;
-use Bynn\DecisionNode\WantedPersonReading;
+use Bynn\DecisionNode\Collection;
+use Bynn\DecisionNode\CollectionItem;
+use Bynn\DecisionNode\CollectionItemPage;
+use Bynn\DecisionNode\Deleted;
+use Bynn\DecisionNode\FaceRecognitionReading;
 use Bynn\DecisionNode\VideoFrame;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\HandlerStack;
@@ -491,6 +495,8 @@ final class Suite
             Compare::match($exp->batch, self::batch($result), 'batch');
         } elseif (property_exists($exp, 'batch_page')) {
             Compare::match($exp->batch_page, self::batchPage($result), 'batch_page');
+        } elseif (($kind = self::collectionKind($exp)) !== null) {
+            self::checkCollectionResult($kind, $exp->{$kind}, $result, $kind);
         } elseif (property_exists($exp, 'batch_results')) {
             self::checkBatchResults($exp->batch_results, $result, 'batch_results');
         } elseif (property_exists($exp, 'session')) {
@@ -929,6 +935,9 @@ final class Suite
         if (str_starts_with($name, 'batches.')) {
             $target = $client->batches;
             $name = substr($name, strlen('batches.'));
+        } elseif (str_starts_with($name, 'collections.')) {
+            $target = $client->collections;
+            $name = substr($name, strlen('collections.'));
         }
         $method = self::METHOD_NAMES[$name] ?? lcfirst(str_replace('_', '', ucwords($name, '_')));
 
@@ -1259,7 +1268,7 @@ final class Suite
             $r instanceof AiGeneratedReading => ['kind' => 'ai_generated', 'image' => $r->image, 'generated' => $r->generated, 'confidence' => $r->confidence, 'method' => $r->method, 'top_generator' => $r->topGenerator, 'c2pa_signer' => $r->c2paSigner, 'c2pa' => $r->c2pa],
             $r instanceof OcrReading => ['kind' => 'ocr', 'image' => $r->image, 'text' => $r->text, 'truncated' => $r->truncated],
             $r instanceof FaceDetectionReading => ['kind' => 'face_detection', 'image' => $r->image, 'faces' => $r->faces, 'detections' => $r->detections],
-            $r instanceof WantedPersonReading => ['kind' => 'wanted_person', 'image' => $r->image, 'faces' => $r->faces, 'matches' => $r->matches],
+            $r instanceof FaceRecognitionReading => ['kind' => 'face_recognition', 'image' => $r->image, 'faces' => $r->faces, 'matches' => $r->matches],
             default => ['kind' => 'unknown', 'raw' => $r->raw],
         };
     }
@@ -1289,6 +1298,104 @@ final class Suite
             'usage' => $b->usage,
             'error' => $b->error,
         ] + $b->raw;
+    }
+
+    /** The expectations of the collections calls' results. */
+    private const COLLECTION_KINDS = ['collection', 'collections', 'item', 'item_page', 'deleted'];
+
+    private static function collectionKind(\stdClass $exp): ?string
+    {
+        foreach (self::COLLECTION_KINDS as $kind) {
+            if (property_exists($exp, $kind)) {
+                return $kind;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * A collections call's result, compared by its fields' wire names; a
+     * list of collections entry by entry.
+     */
+    private static function checkCollectionResult(string $kind, mixed $expected, mixed $result, string $path): void
+    {
+        switch ($kind) {
+            case 'collections':
+                if (!is_array($result) || !is_array($expected)) {
+                    throw new Fail($path . ': expected a list of collections, got ' . self::describe($result));
+                }
+                if (count($expected) !== count($result)) {
+                    throw new Fail(sprintf('%s: expected %d collections, got %d', $path, count($expected), count($result)));
+                }
+                foreach (array_values($result) as $i => $collection) {
+                    Compare::match($expected[$i], self::collection($collection), sprintf('%s[%d]', $path, $i));
+                }
+
+                return;
+            case 'collection':
+                $got = self::collection($result);
+                break;
+            case 'item':
+                $got = self::item($result);
+                break;
+            case 'item_page':
+                if (!$result instanceof CollectionItemPage) {
+                    throw new Fail($path . ': expected a CollectionItemPage, got ' . self::describe($result));
+                }
+                $got = [
+                    'items' => array_map([self::class, 'item'], $result->items),
+                    'offset' => $result->offset,
+                    'limit' => $result->limit,
+                    'total' => $result->total,
+                    'next_offset' => $result->nextOffset,
+                ];
+                break;
+            default:
+                if (!$result instanceof Deleted) {
+                    throw new Fail($path . ': expected a Deleted, got ' . self::describe($result));
+                }
+                $got = ['id' => $result->id, 'deleted' => $result->deleted];
+        }
+        Compare::match($expected, $got, $path);
+    }
+
+    /**
+     * @return array<array-key, mixed>
+     */
+    private static function collection(mixed $c): array
+    {
+        if (!$c instanceof Collection) {
+            throw new Fail('expected a Collection, got ' . self::describe($c));
+        }
+
+        return [
+            'id' => $c->id,
+            'type' => $c->type,
+            'name' => $c->name,
+            'public' => $c->public,
+            'items' => $c->items,
+            'created_at' => $c->createdAt,
+            'deletion' => $c->deletion,
+        ] + $c->raw;
+    }
+
+    /**
+     * @return array<array-key, mixed>
+     */
+    private static function item(mixed $i): array
+    {
+        if (!$i instanceof CollectionItem) {
+            throw new Fail('expected a CollectionItem, got ' . self::describe($i));
+        }
+        $typed = ['id' => $i->id, 'reference' => $i->reference, 'label' => $i->label, 'created_at' => $i->createdAt];
+        foreach (['collection' => $i->collection, 'faces_found' => $i->facesFound, 'box' => $i->box, 'usage' => $i->usage] as $field => $value) {
+            if ($value !== null) {
+                $typed[$field] = $value;
+            }
+        }
+
+        return $typed + $i->raw;
     }
 
     /**
@@ -1505,6 +1612,13 @@ final class Suite
                     break;
                 case 'batch_page':
                     Compare::match($spec->batch_page ?? new \stdClass(), self::batchPage($result), $path . '.batch_page');
+                    break;
+                case 'collection':
+                case 'collections':
+                case 'item':
+                case 'item_page':
+                case 'deleted':
+                    self::checkCollectionResult($spec->result, $spec->{$spec->result} ?? new \stdClass(), $result, $path . '.' . $spec->result);
                     break;
                 case 'batch_results':
                     self::checkResultsOutcome($spec, $result, $path);

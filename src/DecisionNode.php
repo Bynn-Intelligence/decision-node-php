@@ -103,6 +103,9 @@ final class DecisionNode
     /** The Batch API. */
     public readonly Batches $batches;
 
+    /** The Collections API: the workspace's collections of faces, which the face_recognition booster searches. */
+    public readonly Collections $collections;
+
     private readonly Api $api;
 
     private readonly Images $images;
@@ -176,6 +179,7 @@ final class DecisionNode
         $this->images = new Images($this->api, new UploadCache($clock), $this->inlineThreshold, $clock);
         $this->held = new Held();
         $this->batches = new Batches($this->api, $this->images, $this->model, $this->held);
+        $this->collections = new Collections($this->api, $this->images, $this->model, $this->held);
     }
 
     /**

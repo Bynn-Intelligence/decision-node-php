@@ -10,7 +10,7 @@ permissions:
 env:
   # The conformance suite commit this SDK is tested against. Change it here
   # only; the conformance job checks out exactly this commit.
-  CONFORMANCE_REF: 4e7c1ed89c01a920e6dec0f20abd0b8b52652f99
+  CONFORMANCE_REF: 4bc5fe7b42923254f7d7d6efee3d1b2306410816
 
 jobs:
   unit:

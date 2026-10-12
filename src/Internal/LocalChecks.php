@@ -38,6 +38,14 @@ final class LocalChecks
     public const MAX_URL_LENGTH = 2048;
     /** The longest image id, in characters (code points). */
     public const MAX_IMAGE_ID_CHARS = 64;
+    /** The longest name a collection may have, in characters. */
+    public const MAX_COLLECTION_NAME_CHARS = 80;
+    /** The longest reference an item of a collection may carry. */
+    public const MAX_ITEM_REFERENCE_CHARS = 64;
+    /** The longest label an item of a collection may carry. */
+    public const MAX_ITEM_LABEL_CHARS = 128;
+    /** The characters an item's reference is made of. */
+    public const ITEM_REFERENCE_PATTERN = '^[A-Za-z0-9_.:-]+$';
     public const MAX_CHOICE_OPTIONS = 255;
     public const MAX_SCORE_LEVELS = 10;
     public const MAX_GRID_VALUES = 4096;
@@ -278,6 +286,75 @@ final class LocalChecks
         if ($limit !== null && ($limit < 1 || $limit > self::MAX_LIST_LIMIT)) {
             throw self::bad(sprintf('Query parameter limit must be an integer from 1 to %d, got %d.', self::MAX_LIST_LIMIT, $limit));
         }
+    }
+
+    /**
+     * `POST /v1/collections`: the type is `face`, the name 1 to 80
+     * characters. Both faults are reported together.
+     *
+     * @throws ValidationError
+     */
+    public static function collection(mixed $type, mixed $name): void
+    {
+        $entries = [];
+        if ($type !== 'face') {
+            $entries[] = self::entry('literal_error', ['body', 'type'], "Input should be 'face'", $type, ['expected' => "'face'"]);
+        }
+        array_push($entries, ...self::stringEntries(['body', 'name'], $name, 1, self::MAX_COLLECTION_NAME_CHARS));
+        self::raise($entries, null);
+    }
+
+    /**
+     * `POST /v1/collections/{id}/items`: an image, a reference of 1 to 64 of
+     * `[A-Za-z0-9_.:-]` and a label of at most 128 characters, then the
+     * image's own rules, as a decision's.
+     *
+     * @param array<string, mixed> $limits
+     *
+     * @throws BadRequestError|ValidationError
+     */
+    public static function enrollment(mixed $image, mixed $reference, mixed $label, array $limits = []): void
+    {
+        $entries = [];
+        if ($image === null) {
+            $entries[] = self::entry('missing', ['body', 'image'], 'Field required', ['reference' => $reference]);
+        }
+        array_push($entries, ...self::stringEntries(['body', 'reference'], $reference, 1, self::MAX_ITEM_REFERENCE_CHARS, self::ITEM_REFERENCE_PATTERN));
+        if ($label !== null) {
+            array_push($entries, ...self::stringEntries(['body', 'label'], $label, 0, self::MAX_ITEM_LABEL_CHARS));
+        }
+        self::raise($entries, null);
+        self::images([$image], $limits);
+    }
+
+    /**
+     * A string field's 422 entry, as the API answers it: missing, not a
+     * string, too short, too long, or not matching `$pattern`.
+     *
+     * @param list<string|int> $loc
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function stringEntries(array $loc, mixed $value, int $least, int $most, ?string $pattern = null): array
+    {
+        if ($value === null) {
+            return $least > 0 ? [self::entry('missing', $loc, 'Field required', null)] : [];
+        }
+        if (!is_string($value)) {
+            return [self::entry('string_type', $loc, 'Input should be a valid string', $value)];
+        }
+        $n = mb_strlen($value, 'UTF-8');
+        if ($n < $least) {
+            return [self::entry('string_too_short', $loc, sprintf('String should have at least %d character%s', $least, $least === 1 ? '' : 's'), $value, ['min_length' => $least])];
+        }
+        if ($n > $most) {
+            return [self::entry('string_too_long', $loc, sprintf('String should have at most %d characters', $most), $value, ['max_length' => $most])];
+        }
+        if ($pattern !== null && preg_match('/' . $pattern . '/D', $value) !== 1) {
+            return [self::entry('string_pattern_mismatch', $loc, sprintf("String should match pattern '%s'", $pattern), $value, ['pattern' => $pattern])];
+        }
+
+        return [];
     }
 
     /**
