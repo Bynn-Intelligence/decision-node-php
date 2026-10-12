@@ -1,0 +1,93 @@
+# Runs only while the repository is public: nothing is tagged or released while it is private.
+#
+# Auto-release bynn/decisionnode on every push to main: bump the patch in
+# composer.json and DecisionNode::VERSION, run the tests, push the bump
+# commit and tag back to main, and cut the GitHub release. The push back uses
+# the default GITHUB_TOKEN, which does not retrigger this workflow, and the
+# bump commit carries [skip publish] as a second guard. There is no registry
+# upload step, because Packagist does not take uploads: it reads this
+# repository's tags. One-time setup: submit the repository URL at
+# packagist.org/packages/submit and enable the GitHub hook (automatic when
+# Packagist is linked to the GitHub account), after which every tag this
+# workflow pushes appears on Packagist by itself.
+#
+# The version in composer.json (the CHANGELOG's top entry) is released as it
+# stands while no tag names it yet; after that every run bumps the patch
+# first.
+#
+# To ship without cutting a release (docs, CI tweaks), put [skip publish] in
+# the commit message.
+name: Release for Packagist
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+permissions: read-all
+
+jobs:
+  publish:
+    if: "github.event.repository.visibility == 'public' && !contains(github.event.head_commit.message, '[skip publish]')"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: '8.3'
+          coverage: none
+
+      - id: bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          CURRENT=$(php -r 'echo json_decode(file_get_contents("composer.json"))->version;')
+          [ -n "${CURRENT}" ] || { echo "::error::no version in composer.json"; exit 1; }
+          if git rev-parse -q --verify "refs/tags/v${CURRENT}" >/dev/null; then
+            NEW="${CURRENT%.*}.$(( ${CURRENT##*.} + 1 ))"
+            sed -i "s/\"version\": \"${CURRENT}\"/\"version\": \"${NEW}\"/" composer.json
+            sed -i "s/public const VERSION = '${CURRENT}';/public const VERSION = '${NEW}';/" src/DecisionNode.php
+          else
+            NEW="${CURRENT}"
+          fi
+          echo "version=${NEW}" >> "$GITHUB_OUTPUT"
+
+      - run: composer install --no-progress
+      # The conformance suite runs in CI, against its own checkout.
+      - run: vendor/bin/phpunit --testsuite unit
+
+      - run: |
+          if ! git diff --quiet; then
+            git add composer.json src/DecisionNode.php
+            git commit -m "Release v${{ steps.bump.outputs.version }} [skip publish]"
+          fi
+          git tag "v${{ steps.bump.outputs.version }}"
+          git push origin HEAD:main "v${{ steps.bump.outputs.version }}"
+
+      - run: gh release create "v${{ steps.bump.outputs.version }}" --title "v${{ steps.bump.outputs.version }}" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # Tell Packagist directly, rather than waiting on the GitHub-app sync.
+      # PACKAGIST_USERNAME is a repository variable, the safe token a secret;
+      # while either is unset the step skips rather than failing the release.
+      - run: |
+          if [ -z "${PACKAGIST_USERNAME}" ] || [ -z "${PACKAGIST_SAFE_TOKEN}" ]; then
+            echo "Packagist credentials not configured; relying on the GitHub-app sync."
+            exit 0
+          fi
+          curl -sf -X POST \
+            "https://packagist.org/api/update-package?username=${PACKAGIST_USERNAME}&apiToken=${PACKAGIST_SAFE_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            -d '{"repository":{"url":"https://github.com/Bynn-Intelligence/decision-node-php"}}'
+        env:
+          PACKAGIST_USERNAME: ${{ vars.PACKAGIST_USERNAME }}
+          PACKAGIST_SAFE_TOKEN: ${{ secrets.PACKAGIST_SAFE_TOKEN }}
