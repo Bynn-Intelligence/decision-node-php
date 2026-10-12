@@ -1,4 +1,4 @@
-# Runs only while the repository is public: nothing is tagged or released while it is private.
+# Runs only while the repository is public (nothing is tagged or released while it is private) and checks the published files before anything is tagged.
 #
 # Auto-release bynn/decisionnode on every push to main: bump the patch in
 # composer.json and DecisionNode::VERSION, run the tests, push the bump
@@ -63,6 +63,15 @@ jobs:
       - run: composer install --no-progress
       # The conformance suite runs in CI, against its own checkout.
       - run: vendor/bin/phpunit --testsuite unit
+
+      # What a public package must not carry: the archive GitHub builds from
+      # the tag, with the export-ignore rules of .gitattributes applied. A
+      # hit stops the release before anything is tagged.
+      - run: |
+          mkdir "$RUNNER_TEMP/package"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/package"
+          cd "$RUNNER_TEMP/package"
+          find . -type f -print0 | xargs -0 python3 "$GITHUB_WORKSPACE/.github/scripts/check-published.py" --readme ./README.md
 
       - run: |
           if ! git diff --quiet; then

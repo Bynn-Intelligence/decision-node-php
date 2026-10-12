@@ -5,11 +5,13 @@ declare(strict_types=1);
 namespace Bynn\DecisionNode\Tests\Unit;
 
 use Bynn\DecisionNode\BoxAnswer;
+use Bynn\DecisionNode\BoxesAnswer;
 use Bynn\DecisionNode\Decision;
 use Bynn\DecisionNode\Exception\BadRequestError;
 use Bynn\DecisionNode\Exception\ValidationError;
 use Bynn\DecisionNode\Image;
 use Bynn\DecisionNode\PointAnswer;
+use Bynn\DecisionNode\PointsAnswer;
 use Bynn\DecisionNode\Question;
 use Bynn\DecisionNode\UnknownAnswer;
 use Bynn\DecisionNode\Video;
@@ -195,6 +197,65 @@ final class PointBoxTest extends TestCase
         } catch (ValidationError $e) {
             self::assertSame('List should have at most 2 items after validation, not 3', $e->entries[0]['msg']);
             self::assertSame(['field_type' => 'List', 'max_length' => 2, 'actual_length' => 3], $e->entries[0]['ctx']);
+        }
+        self::assertCount(1, $this->history);
+    }
+
+    public function testSeveralPlacesSentAndParsed(): void
+    {
+        self::assertSame(['type' => 'box', 'instructions' => 'Every car.', 'image' => 'lot', 'max' => 8], box('Every car.', 'lot', max: 8)->toArray());
+        self::assertSame(['type' => 'point', 'instructions' => 'Every person.', 'max' => 4], point('Every person.', max: 4)->toArray());
+
+        $d = Decision::fromResponse(['answers' => [
+            'cars' => ['type' => 'box', 'count' => 2, 'present' => 0.99, 'complete' => 0.94, 'boxes' => [
+                ['x1' => 112, 'y1' => 400, 'x2' => 388, 'y2' => 590, 'confidence' => 0.91],
+                ['x1' => 402, 'y1' => 395, 'x2' => 660, 'y2' => 598, 'confidence' => 0.9],
+            ], 'image' => 'lot', 'width' => 1920, 'height' => 1080],
+            'people' => ['type' => 'point', 'count' => 0, 'present' => 0.04, 'complete' => 0.97, 'points' => [], 'image' => 'lot', 'width' => 1920, 'height' => 1080],
+            'wrong' => ['type' => 'box', 'count' => 1, 'present' => 0.9, 'complete' => 0.9, 'points' => [['x' => 1, 'y' => 2, 'confidence' => 0.5]], 'image' => 'lot', 'width' => 1920, 'height' => 1080],
+        ]], []);
+        $cars = $d['cars'];
+        self::assertInstanceOf(BoxesAnswer::class, $cars);
+        self::assertSame([2, 0.94, 402, 0.9], [$cars->count, $cars->complete, $cars->boxes[1]['x1'], $cars->boxes[1]['confidence']]);
+        $people = $d['people'];
+        self::assertInstanceOf(PointsAnswer::class, $people);
+        self::assertSame([0, []], [$people->count, $people->points]);
+        self::assertInstanceOf(UnknownAnswer::class, $d['wrong']);
+    }
+
+    /**
+     * @return iterable<string, array{mixed, string}>
+     */
+    public static function badMax(): iterable
+    {
+        yield 'a fraction' => [2.5, 'int_type'];
+        yield 'below 2' => [1, 'greater_than_equal'];
+        yield 'above 16' => [17, 'less_than_equal'];
+    }
+
+    #[DataProvider('badMax')]
+    public function testMaxCheckedLocally(int|float $max, string $type): void
+    {
+        $dn = $this->client([]);
+        try {
+            $dn->decide(images: [self::belt()], questions: ['cars' => box('Every car.', max: $max)]);
+            self::fail('no error');
+        } catch (ValidationError $e) {
+            self::assertSame($type, $e->entries[0]['type']);
+            self::assertSame(['body', 'questions', 'cars', 'box', 'max'], $e->entries[0]['loc']);
+        }
+        self::assertSame([], $this->history);
+    }
+
+    public function testSeveralPlacesRefusedWhenTheHeldModelHasNone(): void
+    {
+        $dn = $this->client([self::json(200, ['models' => [['name' => 'decisionnode-moe', 'description' => '', 'release_date' => '2026-10-08']]])]);
+        $dn->models();
+        try {
+            $dn->decide(images: [self::belt()], questions: ['cars' => box('Every car.', max: 8)]);
+            self::fail('no error');
+        } catch (ValidationError $e) {
+            self::assertSame(['not_supported', 'Several places are not supported by this model version', 8], [$e->entries[0]['type'], $e->entries[0]['msg'], $e->entries[0]['input']]);
         }
         self::assertCount(1, $this->history);
     }

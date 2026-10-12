@@ -52,9 +52,9 @@ if (!function_exists(__NAMESPACE__ . '\point')) {
     /**
      * One spot in an image. See {@see Question::point()}.
      */
-    function point(mixed $instructions, ?string $image = null, ?string $units = null): Question
+    function point(mixed $instructions, ?string $image = null, ?string $units = null, int|float|null $max = null): Question
     {
-        return Question::point($instructions, $image, $units);
+        return Question::point($instructions, $image, $units, $max);
     }
 }
 
@@ -62,9 +62,9 @@ if (!function_exists(__NAMESPACE__ . '\box')) {
     /**
      * A box around something in an image. See {@see Question::box()}.
      */
-    function box(mixed $instructions, ?string $image = null, ?string $units = null): Question
+    function box(mixed $instructions, ?string $image = null, ?string $units = null, int|float|null $max = null): Question
     {
-        return Question::box($instructions, $image, $units);
+        return Question::box($instructions, $image, $units, $max);
     }
 }
 

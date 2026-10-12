@@ -41,6 +41,9 @@ final class LocalChecks
     public const MAX_CHOICE_OPTIONS = 255;
     public const MAX_SCORE_LEVELS = 10;
     public const MAX_GRID_VALUES = 4096;
+    /** The fewest and the most places a point or box question's `max` asks for. */
+    public const MIN_PLACES = 2;
+    public const MAX_PLACES = 16;
     public const MAX_NESTING = 128;
     public const MAX_WINDOW = 64;
     public const MAX_TTL_SECONDS = 3600;
@@ -90,6 +93,7 @@ final class LocalChecks
             $probe['videos'] = array_fill(0, count($videos), ['id' => '', 'frames' => [['t' => 0]]]);
         }
         self::nesting($probe);
+        self::placesNotSupported($questions, $limits);
         $entries = [];
         if ($state !== null && !self::sdl($state)) {
             array_push($entries, ...self::sdlEntries(['body', 'state'], self::json($state)));
@@ -672,6 +676,35 @@ final class LocalChecks
     }
 
     /**
+     * The gateway's own 422 for a model version that answers one place only:
+     * with the model's models list entry held and no `places.max_places` in
+     * it, every point or box question carrying `max` is a `not_supported`
+     * entry, raised before the other checks. Nothing held, or a session's
+     * open, is left to the server.
+     *
+     * @param array<array-key, mixed> $questions
+     * @param array<string, mixed>    $limits
+     *
+     * @throws ValidationError
+     */
+    private static function placesNotSupported(array $questions, array $limits): void
+    {
+        $places = $limits['places'] ?? null;
+        if ($limits === [] || (is_array($places) && !empty($places['max_places']))) {
+            return;
+        }
+        $entries = [];
+        foreach ($questions as $id => $question) {
+            $q = self::json($question);
+            $type = $q instanceof \stdClass ? ($q->type ?? null) : null;
+            if (($type === 'point' || $type === 'box') && ($q->max ?? null) !== null) {
+                $entries[] = self::entry('not_supported', ['body', 'questions', (string) $id, $type, 'max'], 'Several places are not supported by this model version', $q->max);
+            }
+        }
+        self::raise($entries, null);
+    }
+
+    /**
      * A point or box question: an image to look in, named by `image` when
      * the request has two or more, and `units` of `pixels` or `normalized`;
      * then its instructions, whose absence is a plain-string 400.
@@ -699,6 +732,17 @@ final class LocalChecks
         $units = $q->units ?? null;
         if ($units !== null && !in_array($units, self::UNITS, true)) {
             $entries[] = self::entry('literal_error', [...$loc, 'units'], "Input should be 'pixels' or 'normalized'", $units, ['expected' => "'pixels' or 'normalized'"]);
+        }
+        // Several places: max an integer from 2 to 16.
+        $most = $q->max ?? null;
+        if ($most !== null) {
+            if (!is_int($most)) {
+                $entries[] = self::entry('int_type', [...$loc, 'max'], 'Input should be a valid integer', $most);
+            } elseif ($most < self::MIN_PLACES) {
+                $entries[] = self::entry('greater_than_equal', [...$loc, 'max'], sprintf('Input should be greater than or equal to %d', self::MIN_PLACES), $most, ['ge' => self::MIN_PLACES]);
+            } elseif ($most > self::MAX_PLACES) {
+                $entries[] = self::entry('less_than_equal', [...$loc, 'max'], sprintf('Input should be less than or equal to %d', self::MAX_PLACES), $most, ['le' => self::MAX_PLACES]);
+            }
         }
         if (($q->instructions ?? null) === null) {
             return self::plain(sprintf('%s question must have instructions: %s', ucfirst($type), $id));

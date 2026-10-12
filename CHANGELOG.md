@@ -26,11 +26,14 @@ Implements version 1.3 of the DecisionNode SDK specification (`SPEC_VERSION` `"1
 
 - A decision whose boosters name `ocr` (by name or as an object) waits `DecisionNode::OCR_TIMEOUT`, 30 s, per attempt unless `timeout` was given, and is never retried after a timeout, since the server finishes that attempt and may bill it; its other retries stay. This holds for `decide`, the helpers and each `decideMany` request. The client's `timeout` argument is now nullable, null meaning the default.
 
+- Several places in one answer: `point()` and `box()` (and `Question::point()`, `Question::box()`) take `max`, an integer from 2 to 16, sent in the question only when given. Such a question is answered as a `PointsAnswer` (`count`, `present`, `complete`, `points`, each `['x', 'y', 'confidence']`, `image`, `width`, `height`) or a `BoxesAnswer` (the same with `boxes`, each `['x1', 'y1', 'x2', 'y2', 'confidence']`), told by the answer's own list of places, in decisions and batch results alike; the places keep the API's order and numbers. A several-places answer with a field missing or of the wrong type is an `UnknownAnswer`.
+- A `max` that is not an integer, under 2 or over 16 is refused before anything is sent, as the API's `ValidationError` (`int_type`, `greater_than_equal`, `less_than_equal`) at `["body", "questions", <id>, <type>, "max"]`. After `models()` lists a model without `places.max_places`, a decision's `max` for that model is the API's `not_supported` `ValidationError`, raised locally; a session's open leaves its point and box questions to the server.
+
 ### Changed
 
 - The default model is `decisionnode-moe` (it was `decisionnode-latest`), the family id that always means the current release; `decisionnode-flash` is the fast one. A pinned id is `decisionnode-<family>-<version>`, read from the model list, and an answer names the pinned id that answered. The earlier ids stay accepted by the API.
 - The booster errors map to the existing classes: `booster_unknown` and `booster_input_mismatch` are a `BadRequestError`, `booster_not_enabled` a `PermissionDeniedError`, and `booster_unavailable` an `OverloadedError`, retried like any 529.
-- The conformance tests run suite 1.11.
+- The conformance tests run suite 1.12.
 
 ## [0.2.0] - Unreleased
 

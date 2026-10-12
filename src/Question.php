@@ -19,7 +19,7 @@ final class Question implements \JsonSerializable
     /**
      * @param \stdClass|list<mixed>|null $criteria
      * @param array<string, mixed>       $fields   the type's own fields, as given: a number question's
-     *                                             min, max and step, a point or box question's image and units
+     *                                             min, max and step, a point or box question's image, units and max
      */
     private function __construct(
         public readonly string $type,
@@ -125,26 +125,31 @@ final class Question implements \JsonSerializable
      * in the instructions. `$units` is `pixels` (the default) or `normalized`
      * (fractions of the width and height). Each is left out of the request
      * when not given.
+     *
+     * `$max`, an integer from 2 to 16, asks for several spots: up to `$max`,
+     * answered as a {@see PointsAnswer}. A `$max` the API would refuse is
+     * refused before anything is sent.
      */
-    public static function point(mixed $instructions, ?string $image = null, ?string $units = null): self
+    public static function point(mixed $instructions, ?string $image = null, ?string $units = null, int|float|null $max = null): self
     {
-        return new self('point', $instructions, null, self::place($image, $units));
+        return new self('point', $instructions, null, self::place($image, $units, $max));
     }
 
     /**
      * A box around something in an image, answered with its top-left
      * (`x1`, `y1`) and bottom-right (`x2`, `y2`) corners, `present` and
-     * `confidence`. `$image` and `$units` as for {@see point()}.
+     * `confidence`. `$image` and `$units` as for {@see point()}; `$max` asks
+     * for several boxes, answered as a {@see BoxesAnswer}.
      */
-    public static function box(mixed $instructions, ?string $image = null, ?string $units = null): self
+    public static function box(mixed $instructions, ?string $image = null, ?string $units = null, int|float|null $max = null): self
     {
-        return new self('box', $instructions, null, self::place($image, $units));
+        return new self('box', $instructions, null, self::place($image, $units, $max));
     }
 
     /**
-     * @return array<string, string>
+     * @return array<string, string|int|float>
      */
-    private static function place(?string $image, ?string $units): array
+    private static function place(?string $image, ?string $units, int|float|null $max): array
     {
         $fields = [];
         if ($image !== null) {
@@ -152,6 +157,9 @@ final class Question implements \JsonSerializable
         }
         if ($units !== null) {
             $fields['units'] = $units;
+        }
+        if ($max !== null) {
+            $fields['max'] = $max;
         }
 
         return $fields;
