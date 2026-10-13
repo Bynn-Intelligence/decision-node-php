@@ -340,6 +340,28 @@ Boosters read images in every form an image takes: URL, inline bytes and upload.
 
 Booster calls are billed one per booster and image read with status `ok`, at the price per call on [Pricing](https://decisionnode.com/docs/pricing#boosters). A reading is billed every time a request uses it, one the API had already made for your workspace included; a booster that timed out or failed is free, and a request the safety check refuses pays for none. The readings' tokens are input tokens at the model's price.
 
+## Collections
+
+A collection holds faces the `face_recognition` booster searches. `$dn->collections` creates, lists, reads and deletes the workspace's collections, and enrolls, lists, edits and deletes their items, each result with its fields as sent and `raw`:
+
+```php
+$col = $dn->collections->create('Staff, Stockholm office');
+$item = $dn->collections->enroll(
+    $col->id,
+    Image::fromUrl('badge', 'https://files.example.com/badges/emp-1042.jpg'),
+    reference: 'emp-1042',
+    label: 'Reception',
+    metadata: ['site' => 'stockholm', 'floor' => 3],
+);
+$page = $dn->collections->listItems($col->id, referencePrefix: 'emp-');
+$item = $dn->collections->updateItem($col->id, $item->id, label: null);
+```
+
+- `create`, `enroll` and `updateItem` send an `Idempotency-Key`, a new UUID for each call and the same on every attempt, so they are retried like any call and applied once; a 409 `idempotency_in_progress` is retried after its wait. Each has an `Async` form.
+- `updateItem` sends only the arguments given: `reference`, `label` (`null` sends `null` and removes it) and `metadata`, which replaces the item's whole metadata (`[]` is sent as `{}` and removes every key).
+- `listItems` pages with `offset` and `limit`, and finds the items of one `reference` or of a `referencePrefix`; the page carries `totalCapped`, `reference` and `referencePrefix` as sent.
+- Checked locally, with the API's entries: a name of 1 to 80 characters, a reference of 1 to 64 of `A-Z a-z 0-9 _ . : -`, a label of 1 to 128 characters, and metadata of at most 20 keys of 1 to 40 of `a-z 0-9 _`, each value a text of at most 500 characters, a number, or true or false. An enrolled image's URL is checked as a decision's.
+
 ## Fallback
 
 When no worker can take a request for `decisionnode-moe` at once, the API answers it with `decisionnode-flash` rather than make it wait. `$d->model` is then the model that answered, and `$d->fallback` says so: a `Fallback` with `servedModel` and `requestedModel`, from the `x-decisionnode-fallback` and `x-decisionnode-requested-model` headers; on an ordinary answer it is `null`. To have such a request wait for its own model instead, pass `fallback: false` (the helpers, `decideMany`'s requests and `BatchRequest` take it too): it then gets the 529, an `OverloadedError` retried like any other. Left out, nothing is sent and the API's default applies.
@@ -427,7 +449,7 @@ A request is an array with `custom_id` and the arguments of `decide` (`state`, `
 
 ## Errors
 
-Every error derives from `Bynn\DecisionNode\Exception\DecisionNodeError`, so `catch (DecisionNodeError $e)` catches them all. Its message, `getMessage()`, is the server's message exactly as sent (empty when the server sent none), or the SDK's description when there was no response or the response could not be read. It also has `status`, `errorType`, `requestId` and `reason` (the server's explanation from the `x-decisionnode-error` header, for example "question 'q': a score takes up to 10 levels, got 11").
+Every error derives from `Bynn\DecisionNode\Exception\DecisionNodeError`, so `catch (DecisionNodeError $e)` catches them all. Its message, `getMessage()`, is the server's message exactly as sent (empty when the server sent none), or the SDK's description when there was no response or the response could not be read. It also has `status`, `errorType`, `requestId` and `reason` (the server's explanation from the `x-decisionnode-error` header, for example "question 'q': a score takes up to 10 levels, got 11") and `details` (the body's `detail.details` when it is an object, such as `['reason' => 'enrollment_unpriced']`, else `null`).
 
 An error whose body is not JSON (a page from a proxy or the service's edge, or no body) is classed by its status alone, as in the table: a 413 is a `RequestTooLargeError`, a 400 a `BadRequestError` (never a `ContextLimitError`), a 403 a `PermissionDeniedError` (never a `RefusalError`), a 422 a `ValidationError` with no entries. `errorType` is `null`, `requestId` and `reason` come from their headers, nothing is read from the body, and the message is `HTTP <status> <text>`, then ` (request id <id>)` when the response has one: `HTTP 413 Content Too Large`, `HTTP 408 Request Timeout (request id req_...)`. Retries are as for any response: a 408 is retried, a 413 never.
 
@@ -438,12 +460,12 @@ Only a 2xx response with a JSON body is a success. Redirects are never followed,
 | 400 | `BadRequestError`; `ContextLimitError` when the request is larger than the model's input limit | |
 | 401 | `AuthenticationError` (also raised before sending when no API key is set) | |
 | 402 | `InsufficientCreditError` | |
-| 403 | `RefusalError` when the request is refused under the usage policy; `PermissionDeniedError` otherwise (`booster_not_enabled`, a suspended workspace) | `category` (`harm` or `self_harm`), `safety` |
+| 403 | `RefusalError` when the request is refused under the usage policy; `PermissionDeniedError` otherwise (`booster_not_enabled`, `key_scope_denied`, a suspended workspace) | `category` (`harm` or `self_harm`), `safety` |
 | 404 | `NotFoundError` | |
 | 413 | `RequestTooLargeError`, never retried | |
 | 422 | `ValidationError` | `entries` |
 | 429 | `RateLimitError`; `SessionLimitError` when a key holds as many open sessions as it may | `retryAfter` (seconds) |
-| 529 (also `booster_unavailable`) | `OverloadedError` | `retryAfter` (seconds) |
+| 529 (also `booster_unavailable`; never retried when `details` has the reason `enrollment_unpriced`) | `OverloadedError` | `retryAfter` (seconds) |
 | other 5xx, a 2xx whose body is not JSON, or a 2xx where the answer of `check`, `classify`, `score` or `number` is missing or malformed | `ServerError` | |
 | any other status (a 3xx, 405, 409, 410, 413, 408 once its retries are used up) | `DecisionNodeError` itself | |
 | an image upload's storage refused the bytes | `DecisionNodeError` itself, `errorType` `upload_failed`, the storage's error code in `reason` | |

@@ -158,6 +158,11 @@ final class Api
 
     private static function retryable(string $policy, int $status, string $text): bool
     {
+        // A collection whose face search has no price yet stays so: the
+        // 529 enrollment_unpriced is never retried.
+        if ($status === 529 && Errors::detailReason($text) === 'enrollment_unpriced') {
+            return false;
+        }
         if ($policy === self::RETRY_MUTATION) {
             return $status === 429 || $status === 529;
         }

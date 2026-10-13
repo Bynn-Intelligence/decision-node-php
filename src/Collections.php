@@ -32,6 +32,9 @@ use GuzzleHttp\Promise\PromiseInterface;
  */
 final class Collections
 {
+    /** An argument left out, told apart from null. */
+    private const UNSET = "\0unset";
+
     private const STALE_UPLOAD = ['upload_expired', 'upload_consumed', 'upload_not_found', 'upload_incomplete'];
 
     /**
@@ -143,29 +146,80 @@ final class Collections
      * `POST /v1/collections/{id}/items`: enrolls the largest face in the
      * image. The image is checked and sent as a decision's image is (a URL as
      * given, local bytes inline or uploaded first); the reference is 1 to 64
-     * of `[A-Za-z0-9_.:-]` and the label, sent only when given, at most 128
-     * characters, each refused before anything is sent. An image with no face
-     * is the API's ValidationError with the entry `no_face`.
+     * of `[A-Za-z0-9_.:-]`, the label, sent only when given, 1 to 128
+     * characters, and the metadata, sent only when given, at most 20 keys of
+     * 1 to 40 of `[a-z0-9_]`, each value a text of at most 500 characters, a
+     * number, or true or false; each is refused before anything is sent. An
+     * image with no face is the API's ValidationError with the entry
+     * `no_face`.
      *
      * @param Image|array<string, mixed>|null $image
+     * @param array<string, mixed>|null       $metadata
      *
      * @throws \InvalidArgumentException|BadRequestError|ValidationError|DecisionNodeError
      */
-    public function enroll(string $collectionId, Image|array|null $image, string $reference, ?string $label = null): CollectionItem
+    public function enroll(string $collectionId, Image|array|null $image, string $reference, ?string $label = null, ?array $metadata = null): CollectionItem
     {
-        return $this->enrollAsync($collectionId, $image, $reference, $label)->wait();
+        return $this->enrollAsync($collectionId, $image, $reference, $label, $metadata)->wait();
     }
 
     /**
      * @param Image|array<string, mixed>|null $image
+     * @param array<string, mixed>|null       $metadata
      *
      * @return PromiseInterface resolves with a CollectionItem
      */
-    public function enrollAsync(string $collectionId, Image|array|null $image, string $reference, ?string $label = null): PromiseInterface
+    public function enrollAsync(string $collectionId, Image|array|null $image, string $reference, ?string $label = null, ?array $metadata = null): PromiseInterface
     {
-        LocalChecks::enrollment($image, $reference, $label);
+        LocalChecks::enrollment($image, $reference, $label, $metadata);
 
-        return $this->enrollPlaced(self::path($collectionId) . '/items', $image ?? [], $reference, $label, false);
+        return $this->enrollPlaced(self::path($collectionId) . '/items', $image ?? [], $reference, $label, $metadata, false);
+    }
+
+    /**
+     * `PATCH /v1/collections/{id}/items/{item_id}`: changes an item, sending
+     * only the fields given. A label given as null removes it; metadata
+     * replaces the item's whole metadata ([] removes every key). They are
+     * checked as an enrollment's, and at least one must be given. The call
+     * carries an Idempotency-Key, as create and enroll do, and is retried as
+     * they are.
+     *
+     * @param array<string, mixed>|null $metadata
+     *
+     * @throws ValidationError|DecisionNodeError
+     */
+    public function updateItem(string $collectionId, string $itemId, ?string $reference = null, mixed $label = self::UNSET, ?array $metadata = null): CollectionItem
+    {
+        return $this->updateItemAsync($collectionId, $itemId, $reference, $label, $metadata)->wait();
+    }
+
+    /**
+     * @param array<string, mixed>|null $metadata
+     *
+     * @return PromiseInterface resolves with a CollectionItem
+     */
+    public function updateItemAsync(string $collectionId, string $itemId, ?string $reference = null, mixed $label = self::UNSET, ?array $metadata = null): PromiseInterface
+    {
+        $hasLabel = $label !== self::UNSET;
+        if ($hasLabel && $label !== null && !is_string($label)) {
+            throw new \InvalidArgumentException('label is a string, or null to remove it');
+        }
+        LocalChecks::itemUpdate($reference !== null, $reference, $hasLabel, $label, $metadata !== null, $metadata);
+        $body = [];
+        if ($reference !== null) {
+            $body['reference'] = $reference;
+        }
+        if ($hasLabel) {
+            $body['label'] = $label;
+        }
+        if ($metadata !== null) {
+            $body['metadata'] = self::metadataObject($metadata);
+        }
+        $path = self::path($collectionId) . '/items/' . rawurlencode($itemId);
+
+        return $this->request('PATCH', $path, Json::encode($body), Api::RETRY_IDEMPOTENT, self::idempotencyKey())->then(
+            static fn (array $item): CollectionItem => CollectionItem::fromArray($item),
+        );
     }
 
     /**
@@ -174,15 +228,19 @@ final class Collections
      * more, as a decision does; a second such answer is raised.
      *
      * @param Image|array<string, mixed> $image checked
+     * @param array<string, mixed>|null $metadata checked
      */
-    private function enrollPlaced(string $path, Image|array $image, string $reference, ?string $label, bool $again): PromiseInterface
+    private function enrollPlaced(string $path, Image|array $image, string $reference, ?string $label, ?array $metadata, bool $again): PromiseInterface
     {
         return $this->images->wires([$image])->then(
-            function (array $prepared) use ($path, $image, $reference, $label, $again): PromiseInterface {
+            function (array $prepared) use ($path, $image, $reference, $label, $metadata, $again): PromiseInterface {
                 [$wires, $placed] = $prepared;
                 $body = ['image' => $wires[0], 'reference' => $reference];
                 if ($label !== null) {
                     $body['label'] = $label;
+                }
+                if ($metadata !== null) {
+                    $body['metadata'] = self::metadataObject($metadata);
                 }
                 $encoded = Json::encode($body);
                 LocalChecks::bodySize(strlen($encoded));
@@ -190,11 +248,11 @@ final class Collections
                 // A resend after a stale upload is another body, so it has its own key.
                 return $this->api->request('POST', $path, $encoded, Api::RETRY_IDEMPOTENT, idempotencyKey: self::idempotencyKey())->then(
                     static fn (array $result): CollectionItem => CollectionItem::fromArray(self::object($result)),
-                    function (mixed $reason) use ($path, $image, $reference, $label, $again, $placed): PromiseInterface {
+                    function (mixed $reason) use ($path, $image, $reference, $label, $metadata, $again, $placed): PromiseInterface {
                         if (!$again && $placed !== [] && $reason instanceof BadRequestError && in_array($reason->errorType, self::STALE_UPLOAD, true)) {
                             $this->images->forget($placed);
 
-                            return $this->enrollPlaced($path, $image, $reference, $label, true);
+                            return $this->enrollPlaced($path, $image, $reference, $label, $metadata, true);
                         }
                         throw $reason instanceof \Throwable ? $reason : new DecisionNodeError('The request failed.');
                     },
@@ -206,23 +264,27 @@ final class Collections
     /**
      * `GET /v1/collections/{id}/items`: one page of the collection's items,
      * newest first. `offset` is 0 or more and `limit` 1 to 100, each sent only
-     * when given. A public collection's items are not listed: a
-     * PermissionDeniedError (`collection_read_only`).
+     * when given. `reference` lists the items with exactly that reference,
+     * and `referencePrefix` those whose reference starts with it; one or the
+     * other, each 1 to 64 of `[A-Za-z0-9_.:-]`. A public collection's items
+     * are not listed: a PermissionDeniedError (`collection_read_only`).
      *
-     * @throws BadRequestError for an offset or limit out of bounds, before anything is sent
+     * @throws BadRequestError for a query out of bounds, before anything is sent
      */
-    public function listItems(string $collectionId, ?int $offset = null, ?int $limit = null): CollectionItemPage
+    public function listItems(string $collectionId, ?int $offset = null, ?int $limit = null, ?string $reference = null, ?string $referencePrefix = null): CollectionItemPage
     {
-        return $this->listItemsAsync($collectionId, $offset, $limit)->wait();
+        return $this->listItemsAsync($collectionId, $offset, $limit, $reference, $referencePrefix)->wait();
     }
 
     /**
      * @return PromiseInterface resolves with a CollectionItemPage
      */
-    public function listItemsAsync(string $collectionId, ?int $offset = null, ?int $limit = null): PromiseInterface
+    public function listItemsAsync(string $collectionId, ?int $offset = null, ?int $limit = null, ?string $reference = null, ?string $referencePrefix = null): PromiseInterface
     {
         LocalChecks::listQuery($offset, $limit);
-        $query = http_build_query(array_filter(['offset' => $offset, 'limit' => $limit], static fn (?int $v): bool => $v !== null));
+        LocalChecks::referenceQuery($reference, $referencePrefix);
+        $params = array_filter(['offset' => $offset, 'limit' => $limit, 'reference' => $reference, 'reference_prefix' => $referencePrefix], static fn (int|string|null $v): bool => $v !== null);
+        $query = http_build_query($params, '', '&', PHP_QUERY_RFC3986);
 
         return $this->request('GET', self::path($collectionId) . '/items' . ($query !== '' ? '?' . $query : ''))->then(
             static fn (array $body): CollectionItemPage => CollectionItemPage::fromArray($body),
@@ -246,6 +308,19 @@ final class Collections
         return $this->request('DELETE', self::path($collectionId) . '/items/' . rawurlencode($itemId))->then(
             static fn (array $body): Deleted => Deleted::fromArray($body),
         );
+    }
+
+    /**
+     * Metadata as the API takes it: always a JSON object, so an empty one is
+     * sent as {}.
+     *
+     * @param array<string, mixed> $metadata
+     *
+     * @return array<string, mixed>|\stdClass
+     */
+    private static function metadataObject(array $metadata): array|\stdClass
+    {
+        return $metadata === [] ? new \stdClass() : $metadata;
     }
 
     private static function path(string $collectionId): string

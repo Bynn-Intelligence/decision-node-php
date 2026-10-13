@@ -11,13 +11,15 @@ namespace Bynn\DecisionNode;
  * The answer to an enrollment also carries `collection`, `facesFound` (how
  * many faces the image held; the largest was enrolled), `box` (the enrolled
  * face's corners in pixels of the image as sent) and `usage` (`enrollments`
- * and `cost`, as sent); a listed item has none of them.
+ * and `cost`, as sent); a listed item has none of them. `metadata` is the
+ * item's own keys and values as sent, null when it has none.
  */
 final class CollectionItem
 {
     /**
      * @param array{x1: int|float, y1: int|float, x2: int|float, y2: int|float}|null $box
      * @param array<string, mixed>|null $usage
+     * @param array<array-key, mixed>|null $metadata
      * @param array<array-key, mixed>   $raw   the item object exactly as the API sent it
      */
     public function __construct(
@@ -30,6 +32,7 @@ final class CollectionItem
         public readonly ?string $createdAt,
         public readonly ?array $usage,
         public readonly array $raw,
+        public readonly ?array $metadata = null,
     ) {
     }
 
@@ -67,6 +70,7 @@ final class CollectionItem
             createdAt: $string('created_at'),
             usage: is_array($raw['usage'] ?? null) ? $raw['usage'] : null,
             raw: $raw,
+            metadata: is_array($raw['metadata'] ?? null) ? $raw['metadata'] : null,
         );
     }
 }

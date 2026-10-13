@@ -29,6 +29,7 @@ class DecisionNodeError extends \RuntimeException implements DecisionResult
     /**
      * @param array<string, string> $headers  the response headers, names in lower case
      * @param array<string, array{status: string, latency_ms: int|float|null}> $boosters by booster name, in the request's order
+     * @param array<string, mixed>|null $details the error's `detail.details` when it is an object, else null
      */
     public function __construct(
         string $message = '',
@@ -39,6 +40,7 @@ class DecisionNodeError extends \RuntimeException implements DecisionResult
         public readonly mixed $body = null,
         public readonly array $headers = [],
         public readonly array $boosters = [],
+        public readonly ?array $details = null,
         ?\Throwable $previous = null,
     ) {
         parent::__construct($message, 0, $previous);

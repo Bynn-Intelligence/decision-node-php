@@ -985,6 +985,10 @@ final class Suite
             $arg = (string) $arg;
             $phpName = self::ARGUMENT_NAMES[$arg] ?? lcfirst(str_replace('_', '', ucwords($arg, '_')));
             $args[$phpName] = $name === 'decide_raw' ? $value : self::decode($value, $ctx);
+            if ($phpName === 'metadata' && $args[$phpName] instanceof \stdClass) {
+                // An item's metadata is a PHP map: {} is [] and is sent as {}.
+                $args[$phpName] = json_decode((string) json_encode($args[$phpName]), true);
+            }
         }
 
         if ($name === 'supervise') {
@@ -1387,7 +1391,10 @@ final class Suite
                     'offset' => $result->offset,
                     'limit' => $result->limit,
                     'total' => $result->total,
+                    'total_capped' => $result->totalCapped,
                     'next_offset' => $result->nextOffset,
+                    'reference' => $result->reference,
+                    'reference_prefix' => $result->referencePrefix,
                 ];
                 break;
             default:
@@ -1428,7 +1435,7 @@ final class Suite
             throw new Fail('expected a CollectionItem, got ' . self::describe($i));
         }
         $typed = ['id' => $i->id, 'reference' => $i->reference, 'label' => $i->label, 'created_at' => $i->createdAt];
-        foreach (['collection' => $i->collection, 'faces_found' => $i->facesFound, 'box' => $i->box, 'usage' => $i->usage] as $field => $value) {
+        foreach (['collection' => $i->collection, 'faces_found' => $i->facesFound, 'box' => $i->box, 'usage' => $i->usage, 'metadata' => $i->metadata] as $field => $value) {
             if ($value !== null) {
                 $typed[$field] = $value;
             }
@@ -1592,6 +1599,7 @@ final class Suite
             'entries' => $e instanceof ValidationError ? $e->entries : null,
             'retry_after' => $e instanceof RateLimitError || $e instanceof OverloadedError ? $e->retryAfter : null,
             'boosters' => $e->boosters,
+            'details' => $e->details,
         ];
     }
 

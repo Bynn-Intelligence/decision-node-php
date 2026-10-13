@@ -48,6 +48,11 @@ final class LocalChecks
     /** How much of a string a collections 422 entry echoes. */
     private const ECHO_CHARS = 64;
 
+    /** The limits of an item's metadata. */
+    public const MAX_METADATA_KEYS = 20;
+    public const MAX_METADATA_KEY_CHARS = 40;
+    public const MAX_METADATA_TEXT_CHARS = 500;
+
     public const ITEM_REFERENCE_PATTERN = '^[A-Za-z0-9_.:-]{1,64}$';
     public const MAX_CHOICE_OPTIONS = 255;
     public const MAX_SCORE_LEVELS = 10;
@@ -292,6 +297,42 @@ final class LocalChecks
     }
 
     /**
+     * The items list's lookup: a `reference` (exact) or a `reference_prefix`,
+     * never both, each 1 to 64 of `[A-Za-z0-9_.:-]`, checked after the
+     * offset and the limit.
+     *
+     * @throws BadRequestError
+     */
+    public static function referenceQuery(?string $reference, ?string $prefix): void
+    {
+        if ($reference !== null && $prefix !== null) {
+            throw self::bad('Send query parameter reference or reference_prefix, not both.');
+        }
+        foreach (['reference' => $reference, 'reference_prefix' => $prefix] as $name => $value) {
+            if ($value !== null && preg_match('/' . self::ITEM_REFERENCE_PATTERN . '/D', $value) !== 1) {
+                throw self::bad(sprintf('Query parameter %s must be 1 to 64 characters of A-Z, a-z, 0-9, _, ., : and -, got %s.', $name, self::printable($value, self::MAX_ITEM_REFERENCE_CHARS)));
+            }
+        }
+    }
+
+    /**
+     * A caller's value as an API message echoes it: its first `$most`
+     * characters, any but printable ASCII as `\u{hex}`, then "..." when it
+     * was longer.
+     */
+    private static function printable(string $value, int $most): string
+    {
+        $chars = mb_str_split($value, 1, 'UTF-8');
+        $out = '';
+        foreach (array_slice($chars, 0, $most) as $c) {
+            $code = mb_ord($c, 'UTF-8');
+            $out .= $code >= 0x20 && $code <= 0x7E ? $c : sprintf('\\u{%x}', $code);
+        }
+
+        return $out . (count($chars) > $most ? '...' : '');
+    }
+
+    /**
      * `POST /v1/collections`: the type is `face`, the name 1 to 80
      * characters. Both faults are reported together.
      *
@@ -314,7 +355,7 @@ final class LocalChecks
      *
      * @throws BadRequestError|ValidationError
      */
-    public static function enrollment(mixed $image, mixed $reference, mixed $label): void
+    public static function enrollment(mixed $image, mixed $reference, mixed $label, mixed $metadata = null): void
     {
         $entries = [];
         if ($image === null) {
@@ -325,6 +366,9 @@ final class LocalChecks
         if ($label !== null) {
             array_push($entries, ...self::stringEntries(['body', 'label'], $label, self::MAX_ITEM_LABEL_CHARS));
         }
+        if ($metadata !== null) {
+            array_push($entries, ...self::metadataEntries($metadata));
+        }
         self::raise($entries, null);
         // Only a URL's rules are a decision's; every other fault of the
         // picture is the server's 422 image_unreadable.
@@ -333,6 +377,85 @@ final class LocalChecks
         } elseif (is_array($image) && is_string($image['url'] ?? null)) {
             self::url(is_string($image['id'] ?? null) ? $image['id'] : '', $image['url']);
         }
+    }
+
+    /**
+     * `PATCH /v1/collections/{id}/items/{item_id}`: at least one field, the
+     * reference and the label checked as an enrollment's, a label given as
+     * null clearing it, and the metadata. Each `$has...` says whether that
+     * field was given.
+     *
+     * @throws ValidationError
+     */
+    public static function itemUpdate(bool $hasReference, mixed $reference, bool $hasLabel, mixed $label, bool $hasMetadata, mixed $metadata): void
+    {
+        $entries = [];
+        if ($hasReference) {
+            array_push($entries, ...self::stringEntries(['body', 'reference'], $reference, self::MAX_ITEM_REFERENCE_CHARS, self::ITEM_REFERENCE_PATTERN));
+        }
+        if ($hasLabel && $label !== null) {
+            array_push($entries, ...self::stringEntries(['body', 'label'], $label, self::MAX_ITEM_LABEL_CHARS));
+        }
+        if ($hasMetadata) {
+            array_push($entries, ...self::metadataEntries($metadata));
+        }
+        if (!$hasReference && !$hasLabel && !$hasMetadata) {
+            $entries[] = self::entry('missing', ['body'], 'Send reference, label, metadata or any of them', null);
+        }
+        self::raise($entries, null);
+    }
+
+    /**
+     * An item's metadata's 422 entries, the limits a client may hold: an
+     * object of at most 20 keys (that alone, before any key is read), then,
+     * in key order, each key 1 to 40 of `[a-z0-9_]` and each value a text
+     * of at most 500 characters, a number, or true or false. A text's
+     * control characters, a number's range and the whole object's size are
+     * the server's to judge.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function metadataEntries(mixed $metadata): array
+    {
+        $loc = ['body', 'metadata'];
+        if ($metadata instanceof \stdClass) {
+            $metadata = get_object_vars($metadata);
+        }
+        if (!is_array($metadata) || ($metadata !== [] && array_is_list($metadata))) {
+            return [self::entry('value_error', $loc, 'Metadata is an object of keys and values.', self::echoed($metadata))];
+        }
+        if (count($metadata) > self::MAX_METADATA_KEYS) {
+            return [self::entry('value_error', $loc, sprintf('Metadata holds at most %d keys.', self::MAX_METADATA_KEYS), null)];
+        }
+        $out = [];
+        foreach ($metadata as $key => $value) {
+            $key = (string) $key;
+            if (preg_match('/^[a-z0-9_]{1,40}$/D', $key) !== 1) {
+                $chars = mb_str_split($key, 1, 'UTF-8');
+                $shown = '';
+                foreach (array_slice($chars, 0, self::MAX_METADATA_KEY_CHARS) as $c) {
+                    $shown .= self::isControl($c) ? '?' : $c;
+                }
+                if (count($chars) > self::MAX_METADATA_KEY_CHARS) {
+                    $shown .= '...';
+                }
+                $out[] = self::entry('value_error', $loc, sprintf('A metadata key is 1 to %d characters of a-z, 0-9 and _: "%s".', self::MAX_METADATA_KEY_CHARS, $shown), null);
+            } elseif (is_string($value)) {
+                if (mb_strlen($value, 'UTF-8') > self::MAX_METADATA_TEXT_CHARS) {
+                    $out[] = self::entry('value_error', [...$loc, $key], sprintf('A metadata text is at most %d characters.', self::MAX_METADATA_TEXT_CHARS), self::echoed($value));
+                }
+            } elseif (!is_int($value) && !is_float($value) && !is_bool($value)) {
+                $out[] = self::entry('value_error', [...$loc, $key], 'A metadata value is a text, a number or true or false.', self::echoed($value));
+            }
+        }
+
+        return $out;
+    }
+
+    /** Whether a character is a control character (Unicode category Cc). */
+    private static function isControl(string $c): bool
+    {
+        return preg_match('/^\p{Cc}$/u', $c) === 1;
     }
 
     /**

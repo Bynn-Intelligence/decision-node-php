@@ -47,10 +47,13 @@ final class Errors
         $message = null;
         $entries = null;
         $category = null;
+        $details = null;
         if (is_array($detail) && !array_is_list($detail)) {
             $errorType = is_string($detail['error_type'] ?? null) ? $detail['error_type'] : null;
             $message = is_string($detail['message'] ?? null) ? $detail['message'] : null;
             $category = is_string($detail['category'] ?? null) ? $detail['category'] : null;
+            $more = $detail['details'] ?? null;
+            $details = is_array($more) && ($more === [] || !array_is_list($more)) ? $more : null;
         } elseif (is_string($detail)) {
             $message = $detail;
         } elseif (is_array($detail)) {
@@ -68,6 +71,7 @@ final class Errors
             'body' => $json ? $body : null,
             'headers' => $headers,
             'boosters' => self::boosters($headers['x-decisionnode-boosters'] ?? null),
+            'details' => $details,
         ];
 
         if ($status === 400) {
@@ -183,5 +187,19 @@ final class Errors
         $detail = is_array($body) ? ($body['detail'] ?? null) : null;
 
         return is_array($detail) && is_string($detail['error_type'] ?? null) ? $detail['error_type'] : null;
+    }
+
+    /** The error body's `detail.details.reason`, or null. */
+    public static function detailReason(string $text): ?string
+    {
+        try {
+            $body = Json::decode($text);
+        } catch (\JsonException) {
+            return null;
+        }
+        $detail = is_array($body) ? ($body['detail'] ?? null) : null;
+        $details = is_array($detail) ? ($detail['details'] ?? null) : null;
+
+        return is_array($details) && is_string($details['reason'] ?? null) ? $details['reason'] : null;
     }
 }

@@ -8,6 +8,8 @@ use Bynn\DecisionNode\Collection;
 use Bynn\DecisionNode\Exception\BadRequestError;
 use Bynn\DecisionNode\Exception\DecisionNodeError;
 use Bynn\DecisionNode\Exception\NotFoundError;
+use Bynn\DecisionNode\Exception\OverloadedError;
+use Bynn\DecisionNode\Exception\PermissionDeniedError;
 use Bynn\DecisionNode\Exception\ServerError;
 use Bynn\DecisionNode\Exception\ValidationError;
 use Bynn\DecisionNode\Image;
@@ -170,5 +172,123 @@ final class CollectionsTest extends TestCase
         $e = $entry(fn () => $dn->collections->enroll(self::COL, null, reference: 'r'));
         self::assertSame(['missing', null], [$e['type'], $e['input']]);
         self::assertSame([], $this->history);
+    }
+
+    public function testUpdateItemSendsOnlyTheFieldsGiven(): void
+    {
+        $item = ['id' => 'itm_1', 'reference' => 'emp-1042', 'label' => null, 'metadata' => ['department' => 'Reception'], 'created_at' => '2026-10-12T09:00:00Z'];
+        $dn = $this->client([self::json(200, $item), self::json(200, $item), self::json(200, $item), self::json(200, $item)]);
+
+        $updated = $dn->collections->updateItem(self::COL, 'itm/1', reference: 'emp-1042', metadata: ['department' => 'Reception', 'badge_level' => 2]);
+        self::assertSame(['emp-1042', ['department' => 'Reception']], [$updated->reference, $updated->metadata]);
+        self::assertSame(['PATCH', '/v1/collections/' . self::COL . '/items/itm%2F1'], [$this->sent(0)->getMethod(), $this->sent(0)->getUri()->getPath()]);
+        self::assertSame('{"reference":"emp-1042","metadata":{"department":"Reception","badge_level":2}}', (string) $this->sent(0)->getBody());
+        self::assertMatchesRegularExpression('/^[0-9a-f-]{36}$/', $this->sent(0)->getHeaderLine('Idempotency-Key'));
+
+        // null clears the label; an unset label is not sent at all.
+        $dn->collections->updateItem(self::COL, 'itm_1', label: null);
+        self::assertSame('{"label":null}', (string) $this->sent(1)->getBody());
+        $dn->collections->updateItem(self::COL, 'itm_1', label: 'Front desk');
+        self::assertSame('{"label":"Front desk"}', (string) $this->sent(2)->getBody());
+        // Metadata replaces the whole object: [] is sent as {}, which clears it.
+        $dn->collections->updateItemAsync(self::COL, 'itm_1', metadata: [])->wait();
+        self::assertSame('{"metadata":{}}', (string) $this->sent(3)->getBody());
+    }
+
+    public function testMetadataCheckedBeforeSending(): void
+    {
+        $dn = $this->client([]);
+        $badge = Image::fromUrl('badge', 'https://files.example.com/b.jpg');
+        $entries = function (callable $call): array {
+            try {
+                $call();
+                self::fail('no error');
+            } catch (ValidationError $e) {
+                return $e->entries;
+            }
+        };
+
+        $e = $entries(fn () => $dn->collections->updateItem(self::COL, 'itm_1'));
+        self::assertSame([['type' => 'missing', 'loc' => ['body'], 'msg' => 'Send reference, label, metadata or any of them', 'input' => null]], $e);
+
+        $many = [];
+        for ($i = 0; $i < 21; ++$i) {
+            $many['k' . $i] = $i;
+        }
+        $e = $entries(fn () => $dn->collections->enroll(self::COL, $badge, reference: 'r', metadata: $many));
+        self::assertSame([['type' => 'value_error', 'loc' => ['body', 'metadata'], 'msg' => 'Metadata holds at most 20 keys.', 'input' => null]], $e);
+
+        $e = $entries(fn () => $dn->collections->updateItem(self::COL, 'itm_1', metadata: ['Bad Key' => 1, 'note' => str_repeat('n', 501), 'tags' => ['a'], 'ok' => true]));
+        self::assertSame([
+            ['type' => 'value_error', 'loc' => ['body', 'metadata'], 'msg' => 'A metadata key is 1 to 40 characters of a-z, 0-9 and _: "Bad Key".', 'input' => null],
+            ['type' => 'value_error', 'loc' => ['body', 'metadata', 'note'], 'msg' => 'A metadata text is at most 500 characters.'],
+            ['type' => 'value_error', 'loc' => ['body', 'metadata', 'tags'], 'msg' => 'A metadata value is a text, a number or true or false.', 'input' => null],
+        ], array_map(static fn (array $x): array => array_diff_key($x, $x['loc'] === ['body', 'metadata', 'note'] ? ['input' => 1] : []), $e));
+
+        $e = $entries(fn () => $dn->collections->enroll(self::COL, $badge, reference: 'r', metadata: [str_repeat('k', 41) . "\x01" => 1]));
+        self::assertSame('A metadata key is 1 to 40 characters of a-z, 0-9 and _: "' . str_repeat('k', 40) . '...".', $e[0]['msg']);
+        self::assertSame([], $this->history);
+    }
+
+    public function testListItemsByReference(): void
+    {
+        $dn = $this->client([
+            self::json(200, ['items' => [], 'offset' => 0, 'limit' => 20, 'total' => 10000, 'total_capped' => true, 'next_offset' => null, 'reference' => null, 'reference_prefix' => 'emp:']),
+        ]);
+        $page = $dn->collections->listItems(self::COL, referencePrefix: 'emp:');
+        self::assertSame('reference_prefix=emp%3A', $this->sent(0)->getUri()->getQuery());
+        self::assertSame([true, null, 'emp:'], [$page->totalCapped, $page->reference, $page->referencePrefix]);
+
+        $message = function (callable $call): string {
+            try {
+                $call();
+                self::fail('no error');
+            } catch (BadRequestError $e) {
+                self::assertSame('api_usage_error', $e->errorType);
+
+                return $e->getMessage();
+            }
+        };
+        self::assertSame(
+            'Send query parameter reference or reference_prefix, not both.',
+            $message(fn () => $dn->collections->listItems(self::COL, reference: 'a', referencePrefix: 'b')),
+        );
+        // The limit is checked before the lookup.
+        self::assertStringStartsWith('Query parameter limit', $message(fn () => $dn->collections->listItems(self::COL, limit: 0, reference: 'a', referencePrefix: 'b')));
+        self::assertSame(
+            'Query parameter reference must be 1 to 64 characters of A-Z, a-z, 0-9, _, ., : and -, got emp 1\u{a}\u{e9}.',
+            $message(fn () => $dn->collections->listItems(self::COL, reference: "emp 1\né")),
+        );
+        self::assertSame(
+            'Query parameter reference_prefix must be 1 to 64 characters of A-Z, a-z, 0-9, _, ., : and -, got .',
+            $message(fn () => $dn->collections->listItems(self::COL, referencePrefix: '')),
+        );
+        self::assertSame(
+            'Query parameter reference must be 1 to 64 characters of A-Z, a-z, 0-9, _, ., : and -, got ' . str_repeat('x', 63) . ' ....',
+            $message(fn () => $dn->collections->listItems(self::COL, reference: str_repeat('x', 63) . '  ')),
+        );
+        self::assertCount(1, $this->history);
+    }
+
+    public function testUnpricedEnrollmentNotRetried(): void
+    {
+        $unpriced = ['detail' => ['error_type' => 'overloaded_error', 'message' => 'Face enrollment is not available on this deployment yet.', 'details' => ['reason' => 'enrollment_unpriced']]];
+        $dn = $this->client([
+            self::json(529, $unpriced),
+            self::json(403, ['detail' => ['error_type' => 'key_scope_denied', 'message' => 'This key may not use this endpoint.']]),
+        ], ['maxRetries' => 3]);
+        try {
+            $dn->collections->enroll(self::COL, Image::fromUrl('badge', 'https://files.example.com/b.jpg'), reference: 'emp-1042');
+            self::fail('no error');
+        } catch (OverloadedError $e) {
+            self::assertSame([529, ['reason' => 'enrollment_unpriced'], null], [$e->status, $e->details, $e->retryAfter]);
+        }
+        self::assertCount(1, $this->history);
+        try {
+            $dn->collections->list();
+            self::fail('no error');
+        } catch (PermissionDeniedError $e) {
+            self::assertSame(['key_scope_denied', null], [$e->errorType, $e->details]);
+        }
     }
 }
