@@ -238,7 +238,7 @@ final class BoosterTest extends TestCase
                 'face_recognition' => ['status' => 'ok', 'results' => [
                     ['image' => 'gate', 'faces' => 2, 'matches' => [
                         ['box' => ['x1' => 412, 'y1' => 188, 'x2' => 486, 'y2' => 274], 'score' => 0.93, 'collection' => 'celebrities', 'reference' => 'celeb-00412', 'name' => 'A Public Figure'],
-                        ['box' => ['x1' => 5, 'y1' => 6, 'x2' => 7, 'y2' => 8], 'score' => 0.81, 'collection' => 'wanted-persons', 'reference' => 'wanted:2024-12345'],
+                        ['box' => ['x1' => 5, 'y1' => 6, 'x2' => 7, 'y2' => 8], 'score' => 0.81, 'collection' => 'col_3f6c1a9e0b2d4c7f8a1e5d9b2c4f6a80', 'reference' => 'employee-1042'],
                     ]],
                     ['image' => 'gate', 'faces' => 1, 'matches' => [['box' => ['x1' => 1, 'y1' => 2, 'x2' => 3, 'y2' => 4], 'score' => 0.9, 'collection' => 'celebrities', 'reference' => 192]]],
                     ['image' => 'gate', 'faces' => 1, 'matches' => [['box' => ['x1' => 1, 'y1' => 2, 'x2' => 3, 'y2' => 4], 'score' => 0.9, 'reference' => 'r']]],
@@ -255,7 +255,7 @@ final class BoosterTest extends TestCase
         [$match, $badReference, $noCollection, $badLabel] = $d->evidence['face_recognition']->results;
         self::assertInstanceOf(\Bynn\DecisionNode\FaceRecognitionReading::class, $match);
         self::assertSame(
-            [2, 'A Public Figure', null, 274, 'wanted:2024-12345', null, 'wanted-persons'],
+            [2, 'A Public Figure', null, 274, 'employee-1042', null, 'col_3f6c1a9e0b2d4c7f8a1e5d9b2c4f6a80'],
             [$match->faces, $match->matches[0]['name'], $match->matches[0]['label'], $match->matches[0]['box']['y2'], $match->matches[1]['reference'], $match->matches[1]['name'], $match->matches[1]['collection']],
         );
         self::assertInstanceOf(UnknownReading::class, $badReference);
