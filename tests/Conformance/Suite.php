@@ -1311,7 +1311,7 @@ final class Suite
             $r instanceof AiGeneratedReading => ['kind' => 'ai_generated', 'image' => $r->image, 'generated' => $r->generated, 'confidence' => $r->confidence, 'method' => $r->method, 'top_generator' => $r->topGenerator, 'c2pa_signer' => $r->c2paSigner, 'c2pa' => $r->c2pa],
             $r instanceof OcrReading => ['kind' => 'ocr', 'image' => $r->image, 'text' => $r->text, 'truncated' => $r->truncated],
             $r instanceof FaceDetectionReading => ['kind' => 'face_detection', 'image' => $r->image, 'faces' => $r->faces, 'detections' => $r->detections],
-            $r instanceof FaceRecognitionReading => ['kind' => 'face_recognition', 'image' => $r->image, 'faces' => $r->faces, 'matches' => $r->matches],
+            $r instanceof FaceRecognitionReading => ['kind' => 'face_recognition', 'image' => $r->image, 'collection_name' => $r->collectionName, 'faces' => $r->faces, 'matches' => $r->matches],
             default => ['kind' => 'unknown', 'raw' => $r->raw],
         };
     }

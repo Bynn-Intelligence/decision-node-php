@@ -263,6 +263,32 @@ final class BoosterTest extends TestCase
         self::assertInstanceOf(UnknownReading::class, $badLabel);
     }
 
+    public function testFaceRecognitionCollectionNameAndMetadata(): void
+    {
+        $box = ['x1' => 1, 'y1' => 2, 'x2' => 3, 'y2' => 4];
+        $d = $this->client([self::json(200, [
+            'model' => 'm', 'answers' => [],
+            'evidence' => ['face_recognition' => ['status' => 'ok', 'results' => [
+                ['image' => 'gate', 'collection_name' => 'Staff', 'faces' => 1, 'matches' => [
+                    ['box' => $box, 'score' => 0.9, 'collection' => 'col_1', 'collection_name' => 'Staff', 'reference' => 'employee-1042', 'metadata' => ['site' => 'north', 'floor' => 3]],
+                ]],
+                ['image' => 'gate', 'faces' => 1, 'matches' => [['box' => $box, 'score' => 0.9, 'collection' => 'celebrities', 'reference' => 'celeb-1']]],
+                ['image' => 'gate', 'collection_name' => 7, 'faces' => 0, 'matches' => []],
+                ['image' => 'gate', 'faces' => 1, 'matches' => [['box' => $box, 'score' => 0.9, 'collection' => 'c', 'reference' => 'r', 'metadata' => ['x']]]],
+                ['image' => 'gate', 'faces' => 1, 'matches' => [['box' => $box, 'score' => 0.9, 'collection' => 'c', 'reference' => 'r', 'collection_name' => ['Staff']]]],
+            ]]],
+        ])])->decide(questions: ['q' => truth('?')]);
+        self::assertNotNull($d->evidence);
+        [$own, $public, $badName, $listMetadata, $badMatchName] = $d->evidence['face_recognition']->results;
+        self::assertInstanceOf(\Bynn\DecisionNode\FaceRecognitionReading::class, $own);
+        self::assertSame(['Staff', 'Staff', ['site' => 'north', 'floor' => 3]], [$own->collectionName, $own->matches[0]['collection_name'], $own->matches[0]['metadata']]);
+        self::assertInstanceOf(\Bynn\DecisionNode\FaceRecognitionReading::class, $public);
+        self::assertSame([null, null, null], [$public->collectionName, $public->matches[0]['collection_name'], $public->matches[0]['metadata']]);
+        self::assertInstanceOf(UnknownReading::class, $badName);
+        self::assertInstanceOf(UnknownReading::class, $listMetadata);
+        self::assertInstanceOf(UnknownReading::class, $badMatchName);
+    }
+
     public function testOcrReading(): void
     {
         $d = $this->client([self::json(200, [
