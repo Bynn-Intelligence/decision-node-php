@@ -70,8 +70,9 @@ jobs:
       - run: |
           mkdir "$RUNNER_TEMP/package"
           git archive HEAD | tar -x -C "$RUNNER_TEMP/package"
-          cd "$RUNNER_TEMP/package"
-          find . -type f -print0 | xargs -0 python3 "$GITHUB_WORKSPACE/.github/scripts/check-published.py" --readme ./README.md
+          python3 .github/scripts/check_names.py --commits "$RUNNER_TEMP/package"
+        env:
+          DN_NAME_CHECK_WORDS: ${{ secrets.DN_NAME_CHECK_WORDS }}
 
       - run: |
           if ! git diff --quiet; then

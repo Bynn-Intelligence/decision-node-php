@@ -110,9 +110,14 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
+      - name: Test the release name check
+        run: python3 .github/scripts/test_check_names.py
+      # Internal names are checked here when the secret is set; the release
+      # check requires it.
       - name: Check the published files
+        env:
+          DN_NAME_CHECK_WORDS: ${{ secrets.DN_NAME_CHECK_WORDS }}
         run: |
           mkdir "$RUNNER_TEMP/package"
           git archive HEAD | tar -x -C "$RUNNER_TEMP/package"
-          cd "$RUNNER_TEMP/package"
-          find . -type f -print0 | xargs -0 python3 "$GITHUB_WORKSPACE/.github/scripts/check-published.py" --readme ./README.md
+          python3 .github/scripts/check_names.py --names-optional "$RUNNER_TEMP/package"
