@@ -10,7 +10,7 @@ permissions:
 env:
   # The conformance suite commit this SDK is tested against. Change it here
   # only; the conformance job checks out exactly this commit.
-  CONFORMANCE_REF: b30118eb3c9566bf1c08f81a4524627011230101
+  CONFORMANCE_REF: ede3f8b03d85111ca61085df5aa7a306ab5ec943
 
 jobs:
   unit:
@@ -65,7 +65,6 @@ jobs:
         with:
           repository: Bynn-Intelligence/decision-node-conformance
           ref: ${{ env.CONFORMANCE_REF }}
-          token: ${{ secrets.DECISIONNODE_CONFORMANCE_TOKEN }}
           path: conformance
           persist-credentials: false
 

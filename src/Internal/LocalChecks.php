@@ -45,7 +45,7 @@ final class LocalChecks
     /** The longest label an item of a collection may carry. */
     public const MAX_ITEM_LABEL_CHARS = 128;
     /** The characters an item's reference is made of. */
-    public const ITEM_REFERENCE_PATTERN = '^[A-Za-z0-9_.:-]+$';
+    public const ITEM_REFERENCE_PATTERN = '^[A-Za-z0-9_.:-]{1,64}$';
     public const MAX_CHOICE_OPTIONS = 255;
     public const MAX_SCORE_LEVELS = 10;
     public const MAX_GRID_VALUES = 4096;
@@ -306,25 +306,34 @@ final class LocalChecks
 
     /**
      * `POST /v1/collections/{id}/items`: an image, a reference of 1 to 64 of
-     * `[A-Za-z0-9_.:-]` and a label of at most 128 characters, then the
-     * image's own rules, as a decision's.
-     *
-     * @param array<string, mixed> $limits
+     * `[A-Za-z0-9_.:-]` and a label of at most 128 characters, then an image
+     * URL's rules, as a decision's.
      *
      * @throws BadRequestError|ValidationError
      */
-    public static function enrollment(mixed $image, mixed $reference, mixed $label, array $limits = []): void
+    public static function enrollment(mixed $image, mixed $reference, mixed $label): void
     {
         $entries = [];
         if ($image === null) {
             $entries[] = self::entry('missing', ['body', 'image'], 'Field required', ['reference' => $reference]);
         }
-        array_push($entries, ...self::stringEntries(['body', 'reference'], $reference, 1, self::MAX_ITEM_REFERENCE_CHARS, self::ITEM_REFERENCE_PATTERN));
+        if ($reference === null) {
+            $entries[] = self::entry('missing', ['body', 'reference'], 'Field required', null);
+        } else {
+            // Its length first, then the pattern, which an empty reference fails.
+            array_push($entries, ...self::stringEntries(['body', 'reference'], $reference, 0, self::MAX_ITEM_REFERENCE_CHARS, self::ITEM_REFERENCE_PATTERN));
+        }
         if ($label !== null) {
             array_push($entries, ...self::stringEntries(['body', 'label'], $label, 0, self::MAX_ITEM_LABEL_CHARS));
         }
         self::raise($entries, null);
-        self::images([$image], $limits);
+        // Only a URL's rules are a decision's; every other fault of the
+        // picture is the server's 422 image_unreadable.
+        if ($image instanceof Image && $image->url !== null) {
+            self::url($image->id, $image->url);
+        } elseif (is_array($image) && is_string($image['url'] ?? null)) {
+            self::url(is_string($image['id'] ?? null) ? $image['id'] : '', $image['url']);
+        }
     }
 
     /**

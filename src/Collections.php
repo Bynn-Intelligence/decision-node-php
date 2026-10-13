@@ -9,7 +9,6 @@ use Bynn\DecisionNode\Exception\DecisionNodeError;
 use Bynn\DecisionNode\Exception\ServerError;
 use Bynn\DecisionNode\Exception\ValidationError;
 use Bynn\DecisionNode\Internal\Api;
-use Bynn\DecisionNode\Internal\Held;
 use Bynn\DecisionNode\Internal\Images;
 use Bynn\DecisionNode\Internal\Json;
 use Bynn\DecisionNode\Internal\LocalChecks;
@@ -41,8 +40,6 @@ final class Collections
     public function __construct(
         private readonly Api $api,
         private readonly Images $images,
-        private readonly string $model,
-        private readonly Held $held,
     ) {
     }
 
@@ -166,7 +163,7 @@ final class Collections
      */
     public function enrollAsync(string $collectionId, Image|array|null $image, string $reference, ?string $label = null): PromiseInterface
     {
-        LocalChecks::enrollment($image, $reference, $label, $this->held->limits($this->model));
+        LocalChecks::enrollment($image, $reference, $label);
 
         return $this->enrollPlaced(self::path($collectionId) . '/items', $image ?? [], $reference, $label, false);
     }
