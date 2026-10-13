@@ -45,6 +45,9 @@ final class LocalChecks
     /** The longest label an item of a collection may carry. */
     public const MAX_ITEM_LABEL_CHARS = 128;
     /** The characters an item's reference is made of. */
+    /** How much of a string a collections 422 entry echoes. */
+    private const ECHO_CHARS = 64;
+
     public const ITEM_REFERENCE_PATTERN = '^[A-Za-z0-9_.:-]{1,64}$';
     public const MAX_CHOICE_OPTIONS = 255;
     public const MAX_SCORE_LEVELS = 10;
@@ -298,9 +301,9 @@ final class LocalChecks
     {
         $entries = [];
         if ($type !== 'face') {
-            $entries[] = self::entry('literal_error', ['body', 'type'], "Input should be 'face'", $type, ['expected' => "'face'"]);
+            $entries[] = self::entry('literal_error', ['body', 'type'], "Input should be 'face'", self::echoed($type), ['expected' => "'face'"]);
         }
-        array_push($entries, ...self::stringEntries(['body', 'name'], $name, 1, self::MAX_COLLECTION_NAME_CHARS));
+        array_push($entries, ...self::stringEntries(['body', 'name'], $name, self::MAX_COLLECTION_NAME_CHARS));
         self::raise($entries, null);
     }
 
@@ -315,16 +318,12 @@ final class LocalChecks
     {
         $entries = [];
         if ($image === null) {
-            $entries[] = self::entry('missing', ['body', 'image'], 'Field required', ['reference' => $reference]);
+            $entries[] = self::entry('missing', ['body', 'image'], 'Field required', null);
         }
-        if ($reference === null) {
-            $entries[] = self::entry('missing', ['body', 'reference'], 'Field required', null);
-        } else {
-            // Its length first, then the pattern, which an empty reference fails.
-            array_push($entries, ...self::stringEntries(['body', 'reference'], $reference, 0, self::MAX_ITEM_REFERENCE_CHARS, self::ITEM_REFERENCE_PATTERN));
-        }
+        // Its length first, then the pattern.
+        array_push($entries, ...self::stringEntries(['body', 'reference'], $reference, self::MAX_ITEM_REFERENCE_CHARS, self::ITEM_REFERENCE_PATTERN));
         if ($label !== null) {
-            array_push($entries, ...self::stringEntries(['body', 'label'], $label, 0, self::MAX_ITEM_LABEL_CHARS));
+            array_push($entries, ...self::stringEntries(['body', 'label'], $label, self::MAX_ITEM_LABEL_CHARS));
         }
         self::raise($entries, null);
         // Only a URL's rules are a decision's; every other fault of the
@@ -337,27 +336,45 @@ final class LocalChecks
     }
 
     /**
-     * A string field's 422 entry, as the API answers it: missing, not a
-     * string, too short, too long, or not matching `$pattern`.
+     * An input as a collections 422 entry echoes it, as the API does: a
+     * string cut to its first 64 characters, with "..." when it was longer;
+     * an object or an array as null; anything else as it is.
+     */
+    private static function echoed(mixed $value): mixed
+    {
+        if (is_string($value)) {
+            return mb_strlen($value, 'UTF-8') > self::ECHO_CHARS ? mb_substr($value, 0, self::ECHO_CHARS, 'UTF-8') . '...' : $value;
+        }
+        if (is_array($value) || is_object($value)) {
+            return null;
+        }
+
+        return $value;
+    }
+
+    /**
+     * A collections string field's 422 entry, as the API answers it:
+     * missing, not a string, empty, longer than `$most` characters, or not
+     * matching `$pattern`, in that order, its input echoed as the API
+     * echoes it.
      *
      * @param list<string|int> $loc
      *
      * @return list<array<string, mixed>>
      */
-    private static function stringEntries(array $loc, mixed $value, int $least, int $most, ?string $pattern = null): array
+    private static function stringEntries(array $loc, mixed $value, int $most, ?string $pattern = null): array
     {
         if ($value === null) {
-            return $least > 0 ? [self::entry('missing', $loc, 'Field required', null)] : [];
+            return [self::entry('missing', $loc, 'Field required', null)];
         }
         if (!is_string($value)) {
-            return [self::entry('string_type', $loc, 'Input should be a valid string', $value)];
+            return [self::entry('string_type', $loc, 'Input should be a valid string', self::echoed($value))];
         }
-        $n = mb_strlen($value, 'UTF-8');
-        if ($n < $least) {
-            return [self::entry('string_too_short', $loc, sprintf('String should have at least %d character%s', $least, $least === 1 ? '' : 's'), $value, ['min_length' => $least])];
+        if ($value === '') {
+            return [self::entry('string_too_short', $loc, 'String should have at least 1 character', '', ['min_length' => 1])];
         }
-        if ($n > $most) {
-            return [self::entry('string_too_long', $loc, sprintf('String should have at most %d characters', $most), $value, ['max_length' => $most])];
+        if (mb_strlen($value, 'UTF-8') > $most) {
+            return [self::entry('string_too_long', $loc, sprintf('String should have at most %d characters', $most), self::echoed($value), ['max_length' => $most])];
         }
         if ($pattern !== null && preg_match('/' . $pattern . '/D', $value) !== 1) {
             return [self::entry('string_pattern_mismatch', $loc, sprintf("String should match pattern '%s'", $pattern), $value, ['pattern' => $pattern])];

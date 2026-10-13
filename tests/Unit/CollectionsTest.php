@@ -148,4 +148,27 @@ final class CollectionsTest extends TestCase
         self::assertCount(4, $this->history);
         self::assertNotSame($key, $this->sent(3)->getHeaderLine('Idempotency-Key'));
     }
+
+    public function testEntriesEchoedAsTheApiEchoesThem(): void
+    {
+        $dn = $this->client([]);
+        $badge = Image::fromUrl('badge', 'https://files.example.com/b.jpg');
+        $entry = function (callable $call): array {
+            try {
+                $call();
+                self::fail('no error');
+            } catch (ValidationError $e) {
+                return $e->entries[0];
+            }
+        };
+        $e = $entry(fn () => $dn->collections->enroll(self::COL, $badge, reference: 'r', label: ''));
+        self::assertSame(['string_too_short', ''], [$e['type'], $e['input']]);
+        $e = $entry(fn () => $dn->collections->create(str_repeat('é', 81)));
+        self::assertSame(['string_too_long', str_repeat('é', 64) . '...'], [$e['type'], $e['input']]);
+        $e = $entry(fn () => $dn->collections->enroll(self::COL, $badge, reference: ''));
+        self::assertSame('string_too_short', $e['type']);
+        $e = $entry(fn () => $dn->collections->enroll(self::COL, null, reference: 'r'));
+        self::assertSame(['missing', null], [$e['type'], $e['input']]);
+        self::assertSame([], $this->history);
+    }
 }
