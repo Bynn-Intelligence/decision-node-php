@@ -342,7 +342,7 @@ Booster calls are billed one per booster and image read with status `ok`, at the
 
 ## Collections
 
-A collection holds faces the `face_recognition` booster searches. `$dn->collections` creates, lists, reads and deletes the workspace's collections, and enrolls, lists, edits and deletes their items, each result with its fields as sent and `raw`:
+A collection holds the faces of the people you enroll, for decisions to search. `$dn->collections` creates, lists, reads and deletes the workspace's collections, and enrolls, lists, edits and deletes their items, each result with its fields as sent and `raw`:
 
 ```php
 $col = $dn->collections->create('Staff, Stockholm office');
