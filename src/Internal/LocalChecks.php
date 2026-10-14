@@ -364,8 +364,8 @@ final class LocalChecks
                 throw self::bad('A label filter is name:value, as labels are written.');
             }
         }
-        if ($deviceId !== null && (strlen($deviceId) < 1 || strlen($deviceId) > 128 || preg_match('/^[\x20-\x7E]+$/D', $deviceId) !== 1 || $deviceId[0] === ' ')) {
-            throw self::bad('device_id is 1 to 128 printable ASCII characters, not starting with a space.');
+        if ($deviceId !== null && !self::deviceIdOk($deviceId)) {
+            throw self::bad(self::DEVICE_ID_RULE);
         }
         foreach (array_values($keyIds ?? []) as $i => $keyId) {
             if (!is_string($keyId) || preg_match('/^key_[0-9a-f]{32}$/D', $keyId) !== 1) {
@@ -384,6 +384,200 @@ final class LocalChecks
         if ($limit !== null && ($limit < 1 || $limit > self::USAGE_PAGE_MAX)) {
             throw self::bad('limit is a whole number from 1 to 1000.');
         }
+    }
+
+    /** The most keys one page of `keys->list()` holds. */
+    public const KEYS_PAGE_MAX = 200;
+    /** The most labels a key carries. */
+    public const KEYS_MAX_LABELS = 16;
+    /** The most device ids one bulk revoke names. */
+    public const KEYS_MAX_REVOKE_DEVICES = 1000;
+    /** The longest key name, in characters, once trimmed. */
+    public const KEY_NAME_CHARS = 48;
+
+    private const DEVICE_ID_RULE = 'device_id is 1 to 128 printable ASCII characters, not starting with a space.';
+
+    /**
+     * A key's fields on `POST /v1/keys` and `PATCH /v1/keys/{id}`, the bounds
+     * a client may hold, the first fault only, as the API answers it: the
+     * name (when given) trimmed 1 to 48 characters, then in body order the
+     * device id, the labels (an object of at most 16, each name 1 to 32 of
+     * `a-z 0-9 _ . -`, each value 1 to 64 characters with no control
+     * character), `limits` an object, and the daily spend cap from 0.01 to
+     * 1,000 in whole cents. With `$clears` (an update) a field given as null
+     * clears it and is not checked. A limit's ceiling, the expiry's window
+     * and a name's characters are the server's.
+     *
+     * @param array<string, mixed> $fields the fields given beyond the name, in body order; the cap by its USD amount
+     *
+     * @throws ValidationError
+     */
+    public static function keyFields(bool $hasName, mixed $name, array $fields, bool $clears): void
+    {
+        $entries = $hasName ? self::keyNameEntries($name) : [];
+        if ($entries === []) {
+            foreach ($fields as $field => $value) {
+                if ($clears && $value === null && $field !== 'device_id') {
+                    continue;
+                }
+                switch ($field) {
+                    case 'device_id':
+                        if (!self::deviceIdOk($value)) {
+                            $entries[] = self::entry('value_error', ['body', 'device_id'], self::DEVICE_ID_RULE, self::echoed($value));
+                        }
+                        break;
+                    case 'labels':
+                        array_push($entries, ...self::keyLabelsEntries($value));
+                        break;
+                    case 'limits':
+                        if (!self::isMap($value)) {
+                            $entries[] = self::entry('value_error', ['body', 'limits'], 'limits is an object, or null.', self::echoed($value));
+                        }
+                        break;
+                    case 'daily_spend_cap':
+                        if (!self::capOk($value)) {
+                            // The cap is sent as an object, which is never echoed.
+                            $entries[] = self::entry('value_error', ['body', 'daily_spend_cap'], 'daily_spend_cap.usd is from 0.01 to 1000, in cents, or null.', null);
+                        }
+                        break;
+                }
+            }
+        }
+        if ($entries !== []) {
+            self::raise([$entries[0]], null);
+        }
+    }
+
+    /**
+     * `POST /v1/keys/revoke`: the labels as a key's, at least one of them,
+     * then at most 1,000 device ids, each as a key's; the first fault only.
+     *
+     * @param array<array-key, mixed>|null $deviceIds
+     *
+     * @throws ValidationError
+     */
+    public static function keyRevoke(mixed $labels, ?array $deviceIds): void
+    {
+        $entries = self::keyLabelsEntries($labels);
+        if ($entries === [] && $labels === []) {
+            $entries[] = self::entry('value_error', ['body', 'labels'], 'A bulk revoke names at least one label: every key it revokes has them all.', null);
+        }
+        if ($entries === [] && $deviceIds !== null) {
+            if (count($deviceIds) > self::KEYS_MAX_REVOKE_DEVICES) {
+                $entries[] = self::entry('value_error', ['body', 'device_ids'], 'device_ids is a list of at most 1,000 device ids.', null);
+            } else {
+                foreach ($deviceIds as $deviceId) {
+                    if (!self::deviceIdOk($deviceId)) {
+                        $entries[] = self::entry('value_error', ['body', 'device_id'], self::DEVICE_ID_RULE, self::echoed($deviceId));
+                        break;
+                    }
+                }
+            }
+        }
+        if ($entries !== []) {
+            self::raise([$entries[0]], null);
+        }
+    }
+
+    /**
+     * The query of `keys->list()`, as the API reads it: each label filter
+     * (by name) and the device id as the usage reads take them, the status,
+     * and a limit from 1 to 200. The cursor is the server's.
+     *
+     * @param array<array-key, mixed>|null $labels
+     *
+     * @throws BadRequestError
+     */
+    public static function keyList(?array $labels, ?string $deviceId, ?string $status, ?int $limit): void
+    {
+        self::usageFilters($labels, $deviceId, null, null, $status, null);
+        if ($limit !== null && ($limit < 1 || $limit > self::KEYS_PAGE_MAX)) {
+            throw self::bad('limit is a whole number from 1 to 200.');
+        }
+    }
+
+    /**
+     * An Idempotency-Key given by the caller: 1 to 255 printable ASCII
+     * characters, as the API takes it.
+     *
+     * @throws BadRequestError
+     */
+    public static function idempotencyKey(?string $key): void
+    {
+        if ($key !== null && (strlen($key) < 1 || strlen($key) > 255 || preg_match('/^[\x20-\x7E]+$/D', $key) !== 1)) {
+            throw self::bad('Idempotency-Key must be sent once, as 1 to 255 printable ASCII characters.');
+        }
+    }
+
+    /**
+     * A key name's entries: trimmed, it is 1 to 48 characters. Its character
+     * set is the server's.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function keyNameEntries(mixed $name): array
+    {
+        $trimmed = is_string($name) && mb_check_encoding($name, 'UTF-8') ? (string) preg_replace('/^[\s\p{Z}]+|[\s\p{Z}]+$/u', '', $name) : '';
+        if ($trimmed === '') {
+            return [self::entry('value_error', ['body', 'name'], 'Give the key a name.', self::echoed($name))];
+        }
+        if (mb_strlen($trimmed, 'UTF-8') > self::KEY_NAME_CHARS) {
+            return [self::entry('value_error', ['body', 'name'], 'Key names are at most 48 characters.', self::echoed($name))];
+        }
+
+        return [];
+    }
+
+    /**
+     * A key's labels' entry: an object of at most 16, then, in order, each
+     * name 1 to 32 of `a-z 0-9 _ . -` and each value 1 to 64 characters
+     * with no control character.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function keyLabelsEntries(mixed $labels): array
+    {
+        if (!self::isMap($labels)) {
+            return [self::entry('value_error', ['body', 'labels'], 'labels is an object of names to values.', self::echoed($labels))];
+        }
+        /** @var array<array-key, mixed> $labels */
+        if (count($labels) > self::KEYS_MAX_LABELS) {
+            return [self::entry('value_error', ['body', 'labels'], 'A key has at most 16 labels.', null)];
+        }
+        foreach ($labels as $name => $value) {
+            $name = (string) $name;
+            if (preg_match('/^[a-z0-9_.-]{1,32}$/D', $name) !== 1) {
+                return [self::entry('value_error', ['body', 'labels'], "A label's name is 1 to 32 of a-z, 0-9, _ . and -.", null)];
+            }
+            if (!self::labelFilter($name, $value)) {
+                return [self::entry('value_error', ['body', 'labels', $name], "A label's value is 1 to 64 characters of text.", null)];
+            }
+        }
+
+        return [];
+    }
+
+    /** Whether a value is sent as a JSON object: a map, an empty array or an object. */
+    private static function isMap(mixed $value): bool
+    {
+        return $value instanceof \stdClass || (is_array($value) && ($value === [] || !array_is_list($value)));
+    }
+
+    /** A device id: 1 to 128 printable ASCII characters, not starting with a space. */
+    private static function deviceIdOk(mixed $value): bool
+    {
+        return is_string($value) && strlen($value) >= 1 && strlen($value) <= 128 && preg_match('/^[\x20-\x7E]+$/D', $value) === 1 && $value[0] !== ' ';
+    }
+
+    /** A daily spend cap in USD: from 0.01 to 1,000, in whole cents. */
+    private static function capOk(mixed $usd): bool
+    {
+        if ((!is_int($usd) && !is_float($usd)) || !is_finite((float) $usd)) {
+            return false;
+        }
+        $cents = round($usd * 100);
+
+        return abs($usd * 100 - $cents) < 1e-6 && $cents >= 1 && $usd <= 1000;
     }
 
     /**

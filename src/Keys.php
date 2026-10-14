@@ -4,10 +4,13 @@ declare(strict_types=1);
 
 namespace Bynn\DecisionNode;
 
+use Bynn\DecisionNode\Exception\BadRequestError;
 use Bynn\DecisionNode\Exception\DecisionNodeError;
 use Bynn\DecisionNode\Exception\ServerError;
+use Bynn\DecisionNode\Exception\ValidationError;
 use Bynn\DecisionNode\Internal\Api;
 use Bynn\DecisionNode\Internal\Json;
+use Bynn\DecisionNode\Internal\LocalChecks;
 use Bynn\DecisionNode\Internal\Query;
 use GuzzleHttp\Promise\PromiseInterface;
 
@@ -20,10 +23,15 @@ use GuzzleHttp\Promise\PromiseInterface;
  *     $made = $dn->keys->create('Kiosk 0412', deviceId: 'kiosk-0412', labels: ['store' => '118'],
  *         dailySpendCapUsd: 2.0, idempotencyKey: 'enroll-kiosk-0412');
  *     // hand $made->secret to the device once; keep $made->key->id
- *     $dn->keys->revokeByLabel(['store' => '118']);
+ *     $dn->keys->revokeByLabels(['store' => '118']);
  *
- * The API checks every field; nothing is checked before sending. Every
- * result holds the API's fields and `raw`. `create` sends an
+ * The fixed rules are checked before anything is sent, the first fault
+ * raised as the API would answer it: a name's length, a device id, the
+ * labels, the shape of `limits`, the daily spend cap, an update with nothing
+ * to change, an Idempotency-Key, the list's filters and limit, a bulk revoke
+ * without a label or with over 1,000 devices. A limit's ceiling, the
+ * expiry's window and a name's characters are the server's. Every result
+ * holds the API's fields and `raw`. `create` sends an
  * Idempotency-Key, yours or a new UUID for each call, the same on every
  * attempt, so the server makes one key however often the call is tried: it
  * is retried like every API call, and on a 409 idempotency_in_progress after
@@ -46,13 +54,14 @@ final class Keys
      * `labels` are name => value; `limits` holds `requests_per_second` and
      * `tokens_per_second`; `dailySpendCapUsd` is sent as `{"usd": ...}`;
      * `expiresAt` is RFC 3339. Each is sent only when given. Give an
-     * `idempotencyKey` of the enrollment, so a retry within 24 hours,
-     * yours or the client's, returns the same key and secret.
+     * `idempotencyKey` of the enrollment (1 to 255 printable ASCII
+     * characters), so a retry within 24 hours, yours or the client's,
+     * returns the same key and secret.
      *
      * @param array<string, string>|null $labels
      * @param array<string, int>|null    $limits
      *
-     * @throws DecisionNodeError
+     * @throws ValidationError|BadRequestError|DecisionNodeError
      */
     public function create(
         string $name,
@@ -83,6 +92,12 @@ final class Keys
         ?bool $maySearchCollections = null,
         ?string $idempotencyKey = null,
     ): PromiseInterface {
+        $fields = array_filter(
+            ['device_id' => $deviceId, 'labels' => $labels, 'limits' => $limits, 'daily_spend_cap' => $dailySpendCapUsd],
+            static fn (mixed $value): bool => $value !== null,
+        );
+        LocalChecks::keyFields(true, $name, $fields, false);
+        LocalChecks::idempotencyKey($idempotencyKey);
         $body = ['name' => $name];
         if ($deviceId !== null) {
             $body['device_id'] = $deviceId;
@@ -111,13 +126,15 @@ final class Keys
     /**
      * `GET /v1/keys`: one page of the workspace's Decisions-only keys,
      * newest first. `labels` (name => value) must all match, sent as
-     * `label=name:value` by name; `status` is `active` (the server's
-     * default), `expired`, `revoked` or `all`; `limit` is 1 to 200; `cursor`
-     * is the `nextCursor` of the page before. Each is sent only when given.
+     * `label=name:value` by name; `deviceId` finds one device's key;
+     * `status` is `active` (the server's default), `expired`, `revoked` or
+     * `all`; `limit` is 1 to 200; `cursor` is the `nextCursor` of the page
+     * before. Each is sent only when given. There is no call for one key by
+     * its id: find it by its `deviceId` or labels.
      *
      * @param array<string, string>|null $labels
      *
-     * @throws DecisionNodeError
+     * @throws BadRequestError|DecisionNodeError
      */
     public function list(?array $labels = null, ?string $deviceId = null, ?string $status = null, ?int $limit = null, ?string $cursor = null): KeyPage
     {
@@ -131,6 +148,7 @@ final class Keys
      */
     public function listAsync(?array $labels = null, ?string $deviceId = null, ?string $status = null, ?int $limit = null, ?string $cursor = null): PromiseInterface
     {
+        LocalChecks::keyList($labels, $deviceId, $status, $limit);
         $pairs = Query::labels($labels);
         foreach (['device_id' => $deviceId, 'status' => $status, 'limit' => $limit === null ? null : (string) $limit, 'cursor' => $cursor] as $name => $value) {
             if ($value !== null) {
@@ -165,6 +183,8 @@ final class Keys
      */
     public function allAsync(?array $labels = null, ?string $deviceId = null, ?string $status = null, ?int $limit = null): PromiseInterface
     {
+        // Checked once, before the first page.
+        LocalChecks::keyList($labels, $deviceId, $status, $limit);
         $keys = [];
         $next = function (?string $cursor) use (&$next, &$keys, $labels, $deviceId, $status, $limit): PromiseInterface {
             return $this->listAsync($labels, $deviceId, $status, $limit, $cursor)->then(
@@ -180,37 +200,21 @@ final class Keys
     }
 
     /**
-     * `GET /v1/keys/{id}`: one key. No such key among the workspace's
-     * Decisions-only keys is a NotFoundError ("Not found.").
-     *
-     * @throws DecisionNodeError
-     */
-    public function get(string $keyId): Key
-    {
-        return $this->getAsync($keyId)->wait();
-    }
-
-    /**
-     * @return PromiseInterface resolves with a Key
-     */
-    public function getAsync(string $keyId): PromiseInterface
-    {
-        return $this->request('GET', self::path($keyId))->then(static fn (array $answer): Key => Key::fromArray($answer));
-    }
-
-    /**
-     * `PATCH /v1/keys/{id}`: changes a key, sending only the fields given.
-     * `labels` replaces them all; `labels`, `limits`, `dailySpendCapUsd` and
-     * `expiresAt` given as null clear them. A key's kind and `device_id`
-     * never change. An expired key takes only a rename (else a 409
-     * `key_expired`); a revoked key none (409 `already_revoked`).
+     * `PATCH /v1/keys/{id}`: changes a key, sending only the fields given,
+     * at least one ("Nothing to change." otherwise, before anything is
+     * sent). `labels` replaces them all; `labels`, `limits`,
+     * `dailySpendCapUsd` and `expiresAt` given as null clear them. They are
+     * checked as `create` checks them. A key's kind and `device_id` never
+     * change. An expired key takes only a rename (else a 409 `key_expired`);
+     * a revoked key none (409 `already_revoked`). A key the caller does not
+     * manage is a NotFoundError.
      *
      * `labels` is a map of name => value, `limits` a map of
      * `requests_per_second` and `tokens_per_second`, `dailySpendCapUsd` a
      * number of USD and `expiresAt` an RFC 3339 time; each left out stays as
      * it is, and null clears it.
      *
-     * @throws \InvalidArgumentException|DecisionNodeError
+     * @throws \InvalidArgumentException|ValidationError|BadRequestError|DecisionNodeError
      */
     public function update(
         string $keyId,
@@ -236,36 +240,37 @@ final class Keys
         mixed $expiresAt = self::UNSET,
         ?bool $maySearchCollections = null,
     ): PromiseInterface {
+        if ($expiresAt !== self::UNSET && $expiresAt !== null && !is_string($expiresAt)) {
+            throw new \InvalidArgumentException('expiresAt is an RFC 3339 time, or null to clear it');
+        }
+        $fields = array_filter(
+            ['labels' => $labels, 'limits' => $limits, 'daily_spend_cap' => $dailySpendCapUsd],
+            static fn (mixed $value): bool => $value !== self::UNSET,
+        );
+        LocalChecks::keyFields($name !== null, $name, $fields, true);
         $body = [];
         if ($name !== null) {
             $body['name'] = $name;
         }
         foreach (['labels' => $labels, 'limits' => $limits] as $field => $value) {
-            if ($value === self::UNSET) {
-                continue;
+            if ($value !== self::UNSET) {
+                $body[$field] = is_array($value) ? self::map($value) : $value;
             }
-            if ($value !== null && !is_array($value)) {
-                throw new \InvalidArgumentException($field . ' is a map, or null to clear it');
-            }
-            $body[$field] = $value === null ? null : self::map($value);
         }
         if ($dailySpendCapUsd !== self::UNSET) {
-            if ($dailySpendCapUsd !== null && !is_int($dailySpendCapUsd) && !is_float($dailySpendCapUsd)) {
-                throw new \InvalidArgumentException('dailySpendCapUsd is a number of USD, or null to clear it');
-            }
             $body['daily_spend_cap'] = $dailySpendCapUsd === null ? null : ['usd' => $dailySpendCapUsd];
         }
         if ($expiresAt !== self::UNSET) {
-            if ($expiresAt !== null && !is_string($expiresAt)) {
-                throw new \InvalidArgumentException('expiresAt is an RFC 3339 time, or null to clear it');
-            }
             $body['expires_at'] = $expiresAt;
         }
         if ($maySearchCollections !== null) {
             $body['may_search_collections'] = $maySearchCollections;
         }
+        if ($body === []) {
+            throw new BadRequestError('Nothing to change.', errorType: 'api_usage_error', reason: 'Nothing to change.');
+        }
 
-        return $this->request('PATCH', self::path($keyId), Json::encode($body === [] ? new \stdClass() : $body))->then(
+        return $this->request('PATCH', self::path($keyId), Json::encode($body))->then(
             static fn (array $answer): Key => Key::fromArray($answer),
         );
     }
@@ -291,34 +296,36 @@ final class Keys
 
     /**
      * `POST /v1/keys/revoke`: revokes every active key whose labels match all
-     * of `labels`, and, given `deviceIds` (up to 1,000), only those among
-     * them; at most 10,000 a call. Call it again while `more` is true. With
-     * `dryRun` it revokes nothing and answers `wouldRevoke`.
+     * of `labels` (at least one), and, given `deviceIds` (up to 1,000), only
+     * those among them; at most 10,000 a call. Call it again while `more` is
+     * true. With `dryRun` true it revokes nothing and answers `wouldRevoke`;
+     * `dryRun` is sent only when given.
      *
-     * @param array<string, string>           $labels
+     * @param array<string, string>         $labels
      * @param array<array-key, string>|null $deviceIds
      *
-     * @throws DecisionNodeError
+     * @throws ValidationError|DecisionNodeError
      */
-    public function revokeByLabel(array $labels, ?array $deviceIds = null, bool $dryRun = false): KeysRevoked
+    public function revokeByLabels(array $labels, ?array $deviceIds = null, ?bool $dryRun = null): KeysRevoked
     {
-        return $this->revokeByLabelAsync($labels, $deviceIds, $dryRun)->wait();
+        return $this->revokeByLabelsAsync($labels, $deviceIds, $dryRun)->wait();
     }
 
     /**
-     * @param array<string, string>           $labels
+     * @param array<string, string>         $labels
      * @param array<array-key, string>|null $deviceIds
      *
      * @return PromiseInterface resolves with a KeysRevoked
      */
-    public function revokeByLabelAsync(array $labels, ?array $deviceIds = null, bool $dryRun = false): PromiseInterface
+    public function revokeByLabelsAsync(array $labels, ?array $deviceIds = null, ?bool $dryRun = null): PromiseInterface
     {
+        LocalChecks::keyRevoke($labels, $deviceIds);
         $body = ['labels' => self::map($labels)];
         if ($deviceIds !== null) {
             $body['device_ids'] = array_values($deviceIds);
         }
-        if ($dryRun) {
-            $body['dry_run'] = true;
+        if ($dryRun !== null) {
+            $body['dry_run'] = $dryRun;
         }
 
         return $this->request('POST', '/v1/keys/revoke', Json::encode($body))->then(
@@ -332,11 +339,11 @@ final class Keys
      *
      * @param array<array-key, mixed> $map
      *
-     * @return array<array-key, mixed>|\stdClass
+     * @return \stdClass
      */
-    private static function map(array $map): array|\stdClass
+    private static function map(array $map): \stdClass
     {
-        return $map === [] ? new \stdClass() : $map;
+        return (object) $map;
     }
 
     private static function path(string $keyId): string

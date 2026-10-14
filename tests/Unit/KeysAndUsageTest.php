@@ -8,6 +8,7 @@ use Bynn\DecisionNode\Exception\BadRequestError;
 use Bynn\DecisionNode\Exception\DecisionNodeError;
 use Bynn\DecisionNode\Exception\PermissionDeniedError;
 use Bynn\DecisionNode\Exception\RateLimitError;
+use Bynn\DecisionNode\Exception\ValidationError;
 use Bynn\DecisionNode\Key;
 use Bynn\DecisionNode\UsageItem;
 
@@ -127,7 +128,6 @@ final class KeysAndUsageTest extends TestCase
             self::json(200, ['items' => [self::keyObject()], 'next_cursor' => 'n2']),
             self::json(200, self::keyObject()),
             self::json(200, self::keyObject()),
-            self::json(200, self::keyObject()),
             self::json(200, ['id' => self::KEY_ID, 'revoked' => true]),
             self::json(200, ['would_revoke' => 37, 'more' => false]),
             self::json(200, ['revoked' => 35, 'more' => true]),
@@ -137,23 +137,21 @@ final class KeysAndUsageTest extends TestCase
         self::assertInstanceOf(Key::class, $page->items[0]);
         self::assertSame(['decide', 'kiosk-0412', 5, false, 'key_1f0e2d3c4b5a69788796a5b4c3d2e1f0', null], [$page->items[0]->scope, $page->items[0]->deviceId, $page->items[0]->limits['requests_per_second'] ?? null, $page->items[0]->maySearchCollections, $page->items[0]->createdByKey['id'] ?? null, $page->items[0]->lastUsedAt]);
 
-        self::assertSame(self::KEY_ID, $dn->keys->get(self::KEY_ID)->id);
-        self::assertSame(['GET', '/v1/keys/' . self::KEY_ID], [$this->sent(1)->getMethod(), $this->sent(1)->getUri()->getPath()]);
-
         $dn->keys->update(self::KEY_ID, name: 'Kiosk 12', labels: ['store' => '119'], dailySpendCapUsd: null, expiresAt: null);
-        self::assertSame(['PATCH', '{"name":"Kiosk 12","labels":{"store":"119"},"daily_spend_cap":null,"expires_at":null}', ''], [$this->sent(2)->getMethod(), (string) $this->sent(2)->getBody(), $this->sent(2)->getHeaderLine('Idempotency-Key')]);
+        self::assertSame(['PATCH', '/v1/keys/' . self::KEY_ID, '{"name":"Kiosk 12","labels":{"store":"119"},"daily_spend_cap":null,"expires_at":null}', ''],
+            [$this->sent(1)->getMethod(), $this->sent(1)->getUri()->getPath(), (string) $this->sent(1)->getBody(), $this->sent(1)->getHeaderLine('Idempotency-Key')]);
         $dn->keys->update(self::KEY_ID, labels: null, limits: ['tokens_per_second' => 100], dailySpendCapUsd: 3, maySearchCollections: true);
-        self::assertSame('{"labels":null,"limits":{"tokens_per_second":100},"daily_spend_cap":{"usd":3},"may_search_collections":true}', (string) $this->sent(3)->getBody());
+        self::assertSame('{"labels":null,"limits":{"tokens_per_second":100},"daily_spend_cap":{"usd":3},"may_search_collections":true}', (string) $this->sent(2)->getBody());
 
         $revoked = $dn->keys->revoke(self::KEY_ID);
-        self::assertSame(['DELETE', '/v1/keys/' . self::KEY_ID, true], [$this->sent(4)->getMethod(), $this->sent(4)->getUri()->getPath(), $revoked->revoked]);
+        self::assertSame(['DELETE', '/v1/keys/' . self::KEY_ID, true], [$this->sent(3)->getMethod(), $this->sent(3)->getUri()->getPath(), $revoked->revoked]);
 
-        $counted = $dn->keys->revokeByLabel(['store' => '118'], dryRun: true);
+        $counted = $dn->keys->revokeByLabels(['store' => '118'], dryRun: true);
         self::assertSame([null, 37, false], [$counted->revoked, $counted->wouldRevoke, $counted->more]);
-        self::assertSame(['POST', '/v1/keys/revoke', '{"labels":{"store":"118"},"dry_run":true}'], [$this->sent(5)->getMethod(), $this->sent(5)->getUri()->getPath(), (string) $this->sent(5)->getBody()]);
-        $done = $dn->keys->revokeByLabel(['store' => '118'], deviceIds: ['kiosk-0412']);
+        self::assertSame(['POST', '/v1/keys/revoke', '{"labels":{"store":"118"},"dry_run":true}'], [$this->sent(4)->getMethod(), $this->sent(4)->getUri()->getPath(), (string) $this->sent(4)->getBody()]);
+        $done = $dn->keys->revokeByLabels(['store' => '118'], deviceIds: ['kiosk-0412'], dryRun: false);
         self::assertSame([35, null, true], [$done->revoked, $done->wouldRevoke, $done->more]);
-        self::assertSame('{"labels":{"store":"118"},"device_ids":["kiosk-0412"]}', (string) $this->sent(6)->getBody());
+        self::assertSame('{"labels":{"store":"118"},"device_ids":["kiosk-0412"],"dry_run":false}', (string) $this->sent(5)->getBody());
     }
 
     public function testKeysAllFollowsTheCursor(): void
@@ -166,11 +164,54 @@ final class KeysAndUsageTest extends TestCase
         self::assertSame('device_id=kiosk-0412&cursor=n2', $this->sent(1)->getUri()->getQuery());
     }
 
-    public function testUpdateRefusesAWrongType(): void
+    public function testKeysCheckedBeforeSending(): void
     {
         $dn = $this->client([]);
-        $this->expectException(\InvalidArgumentException::class);
-        $dn->keys->update(self::KEY_ID, labels: 'store:118');
+        $refused = [
+            ['body', 'name', 'Give the key a name.', '   ', static fn () => $dn->keys->create('   ')],
+            ['body', 'name', 'Key names are at most 48 characters.', str_repeat('n', 49), static fn () => $dn->keys->create(str_repeat('n', 49))],
+            ['body', 'device_id', 'device_id is 1 to 128 printable ASCII characters, not starting with a space.', ' gate', static fn () => $dn->keys->create('Gate', deviceId: ' gate')],
+            ['body', 'labels', 'A key has at most 16 labels.', null, static fn () => $dn->keys->create('Gate', labels: array_combine(array_map(static fn (int $i): string => 'l' . $i, range(0, 16)), array_fill(0, 17, 'v')))],
+            ['body', 'labels', "A label's name is 1 to 32 of a-z, 0-9, _ . and -.", null, static fn () => $dn->keys->create('Gate', labels: ['Site' => 'oslo'])],
+            ['body', 'labels', 'site', "A label's value is 1 to 64 characters of text.", null, static fn () => $dn->keys->update(self::KEY_ID, labels: ['site' => ''])],
+            ['body', 'labels', 'labels is an object of names to values.', 'site:oslo', static fn () => $dn->keys->update(self::KEY_ID, labels: 'site:oslo')],
+            ['body', 'limits', 'limits is an object, or null.', null, static fn () => $dn->keys->create('Gate', limits: [5])],
+            ['body', 'daily_spend_cap', 'daily_spend_cap.usd is from 0.01 to 1000, in cents, or null.', null, static fn () => $dn->keys->create('Gate', dailySpendCapUsd: 0.005)],
+            ['body', 'daily_spend_cap', 'daily_spend_cap.usd is from 0.01 to 1000, in cents, or null.', null, static fn () => $dn->keys->update(self::KEY_ID, dailySpendCapUsd: 1000.01)],
+            ['body', 'labels', 'A bulk revoke names at least one label: every key it revokes has them all.', null, static fn () => $dn->keys->revokeByLabels([])],
+            ['body', 'device_ids', 'device_ids is a list of at most 1,000 device ids.', null, static fn () => $dn->keys->revokeByLabels(['site' => 'oslo'], deviceIds: array_fill(0, 1001, 'd'))],
+            ['body', 'device_id', 'device_id is 1 to 128 printable ASCII characters, not starting with a space.', '', static fn () => $dn->keys->revokeByLabels(['site' => 'oslo'], deviceIds: ['d-1', ''])],
+        ];
+        foreach ($refused as $case) {
+            $call = array_pop($case);
+            $input = array_pop($case);
+            $message = array_pop($case);
+            try {
+                $call();
+                self::fail($message);
+            } catch (ValidationError $e) {
+                self::assertSame([['type' => 'value_error', 'loc' => $case, 'msg' => $message, 'input' => $input]], $e->entries);
+            }
+        }
+        $bad = [
+            'Idempotency-Key must be sent once, as 1 to 255 printable ASCII characters.' => static fn () => $dn->keys->create('Gate', idempotencyKey: ''),
+            'Nothing to change.' => static fn () => $dn->keys->update(self::KEY_ID),
+            'limit is a whole number from 1 to 200.' => static fn () => $dn->keys->list(limit: 201),
+            'status is active, expired, revoked or all.' => static fn () => $dn->keys->all(status: 'gone'),
+            'A label filter is name:value, as labels are written.' => static fn () => $dn->keys->list(labels: ['Site' => 'oslo']),
+        ];
+        foreach ($bad as $message => $call) {
+            try {
+                $call();
+                self::fail($message);
+            } catch (BadRequestError $e) {
+                self::assertSame([$message, 'api_usage_error'], [$e->getMessage(), $e->errorType]);
+            }
+        }
+        // Clearing is never refused, and a cleared field counts as a change.
+        $dn = $this->client([self::json(200, self::keyObject())]);
+        $dn->keys->update(self::KEY_ID, limits: null);
+        self::assertSame('{"limits":null}', (string) $this->sent(0)->getBody());
     }
 
     public function testSpendCapNotRetried(): void

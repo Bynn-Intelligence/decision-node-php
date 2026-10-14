@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Bynn\DecisionNode;
 
 /**
- * The answer to `keys->revokeByLabel()`: `revoked`, how many keys this call
+ * The answer to `keys->revokeByLabels()`: `revoked`, how many keys this call
  * revoked, or with a dry run `wouldRevoke`, how many it would (the other is
  * null), and `more`, true while matching keys are left: call again until it
  * is false.

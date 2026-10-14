@@ -45,7 +45,12 @@ use Bynn\DecisionNode\Collection;
 use Bynn\DecisionNode\CollectionItem;
 use Bynn\DecisionNode\CollectionItemPage;
 use Bynn\DecisionNode\Deleted;
+use Bynn\DecisionNode\CreatedKey;
+use Bynn\DecisionNode\Key;
+use Bynn\DecisionNode\KeyPage;
+use Bynn\DecisionNode\KeysRevoked;
 use Bynn\DecisionNode\KeyUsage;
+use Bynn\DecisionNode\RevokedKey;
 use Bynn\DecisionNode\FaceRecognitionReading;
 use Bynn\DecisionNode\VideoFrame;
 use GuzzleHttp\Client as GuzzleClient;
@@ -998,6 +1003,9 @@ final class Suite
         } elseif (str_starts_with($name, 'usage.')) {
             $target = $client->usage;
             $name = substr($name, strlen('usage.'));
+        } elseif (str_starts_with($name, 'keys.')) {
+            $target = $client->keys;
+            $name = substr($name, strlen('keys.'));
         }
         $method = self::METHOD_NAMES[$name] ?? lcfirst(str_replace('_', '', ucwords($name, '_')));
 
@@ -1006,7 +1014,14 @@ final class Suite
             $arg = (string) $arg;
             $phpName = self::ARGUMENT_NAMES[$arg] ?? lcfirst(str_replace('_', '', ucwords($arg, '_')));
             $args[$phpName] = $name === 'decide_raw' ? $value : self::decode($value, $ctx);
-            if (in_array($phpName, ['metadata', 'labels'], true) && $args[$phpName] instanceof \stdClass) {
+            if ($phpName === 'dailySpendCap' && str_starts_with((string) $call->method, 'keys.')) {
+                // The keys calls take the cap as its USD amount; null clears it.
+                $cap = $args[$phpName];
+                unset($args[$phpName]);
+                $args['dailySpendCapUsd'] = $cap instanceof \stdClass && property_exists($cap, 'usd') ? $cap->usd : $cap;
+                continue;
+            }
+            if (in_array($phpName, ['metadata', 'labels', 'limits'], true) && $args[$phpName] instanceof \stdClass) {
                 // An item's metadata is a PHP map: {} is [] and is sent as {}.
                 $args[$phpName] = json_decode((string) json_encode($args[$phpName]), true);
             }
@@ -1364,7 +1379,12 @@ final class Suite
     }
 
     /** The expectations of the collections calls' results. */
-    private const COLLECTION_KINDS = ['collection', 'collections', 'item', 'item_page', 'deleted', 'key_usage', 'usage_page', 'usage_items'];
+    private const COLLECTION_KINDS = ['collection', 'collections', 'item', 'item_page', 'deleted', 'key_usage', 'usage_page', 'usage_items',
+        'created_key', 'api_key', 'key_page', 'api_keys', 'key_revoked', 'keys_revoked'];
+
+    /** The keys calls' results, each compared by the object as sent. */
+    private const KEY_RESULTS = ['created_key' => CreatedKey::class, 'api_key' => Key::class, 'key_page' => KeyPage::class,
+        'key_revoked' => RevokedKey::class, 'keys_revoked' => KeysRevoked::class];
 
     private static function collectionKind(\stdClass $exp): ?string
     {
@@ -1402,6 +1422,32 @@ final class Suite
             case 'item':
                 $got = self::item($result);
                 break;
+            case 'created_key':
+            case 'api_key':
+            case 'key_page':
+            case 'key_revoked':
+            case 'keys_revoked':
+                $class = self::KEY_RESULTS[$kind];
+                if (!$result instanceof $class) {
+                    throw new Fail(sprintf('%s: expected a %s, got %s', $path, $class, self::describe($result)));
+                }
+                $got = $result->raw;
+                break;
+            case 'api_keys':
+                if (!is_array($result) || !is_array($expected)) {
+                    throw new Fail($path . ': expected a list of keys, got ' . self::describe($result));
+                }
+                if (count($expected) !== count($result)) {
+                    throw new Fail(sprintf('%s: expected %d keys, got %d', $path, count($expected), count($result)));
+                }
+                foreach (array_values($result) as $i => $key) {
+                    if (!$key instanceof Key) {
+                        throw new Fail(sprintf('%s[%d]: expected a Key, got %s', $path, $i, self::describe($key)));
+                    }
+                    Compare::match($expected[$i], $key->raw, sprintf('%s[%d]', $path, $i));
+                }
+
+                return;
             case 'key_usage':
                 if (!$result instanceof KeyUsage) {
                     throw new Fail($path . ': expected a KeyUsage, got ' . self::describe($result));
@@ -1715,6 +1761,12 @@ final class Suite
                 case 'key_usage':
                 case 'usage_page':
                 case 'usage_items':
+                case 'created_key':
+                case 'api_key':
+                case 'key_page':
+                case 'api_keys':
+                case 'key_revoked':
+                case 'keys_revoked':
                     self::checkCollectionResult($spec->result, $spec->{$spec->result} ?? new \stdClass(), $result, $path . '.' . $spec->result);
                     break;
                 case 'batch_results':

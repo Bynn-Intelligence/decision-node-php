@@ -401,17 +401,17 @@ $page = $manage->keys->list(labels: ['store' => '118']);
 $manage->keys->update($made->key->id, labels: ['store' => '119']);
 $manage->keys->revoke($made->key->id);
 
-$counted = $manage->keys->revokeByLabel(['fw' => '2.4'], dryRun: true);   // $counted->wouldRevoke
+$counted = $manage->keys->revokeByLabels(['fw' => '2.4'], dryRun: true);   // $counted->wouldRevoke
 do {
-    $done = $manage->keys->revokeByLabel(['fw' => '2.4']);
+    $done = $manage->keys->revokeByLabels(['fw' => '2.4']);
 } while ($done->more);
 ```
 
 - `create` sends an `Idempotency-Key`, yours or a new UUID for each call, the same on every attempt: a retry within 24 hours returns the same key and its secret again, and makes no second key. The secret is shown only then.
-- `list` pages the workspace's Decisions-only keys, newest first, by `labels`, `deviceId` and `status` (`active` by default, `expired`, `revoked` or `all`); `all()` follows `nextCursor`. `get` reads one key.
-- `update` sends only the arguments given. `labels` replaces them all, and `labels`, `limits`, `dailySpendCapUsd` and `expiresAt` given as `null` clear them. A key's kind and `deviceId` never change; an expired key takes only a rename.
-- `revoke` revokes one key at once. `revokeByLabel` revokes every active key matching all the labels, at most 10,000 a call: call it again while `more` is true.
-- The API checks every field; its refusals arrive as its errors (`ValidationError`, a 409 `already_revoked` or `key_expired` as `DecisionNodeError`). Each call has an `Async` form.
+- `list` pages the workspace's Decisions-only keys, newest first, by `labels`, `deviceId` and `status` (`active` by default, `expired`, `revoked` or `all`), up to 200 a page; `all()` follows `nextCursor`. To read one key, list it by its `deviceId` or its labels: there is no call for one key by its id.
+- `update` sends only the arguments given, at least one. `labels` replaces them all, and `labels`, `limits`, `dailySpendCapUsd` and `expiresAt` given as `null` clear them. A key's kind and `deviceId` never change; an expired key takes only a rename.
+- `revoke` revokes one key at once. `revokeByLabels` revokes every active key matching all the labels, at least one, at most 10,000 a call: call it again while `more` is true.
+- Checked locally, the first fault as the API answers it: a name of 1 to 48 characters once trimmed, a `deviceId` of 1 to 128 printable ASCII characters not starting with a space, at most 16 labels with names of 1 to 32 of `a-z 0-9 _ . -` and values of 1 to 64 characters, `limits` a map, a daily spend cap from 0.01 to 1,000 in whole cents (each a `ValidationError` with the API's entry), an update with nothing to change, an `idempotencyKey` that is not 1 to 255 printable ASCII characters, the list's filters and limit (each a `BadRequestError`, `api_usage_error`), and a bulk revoke without a label or with over 1,000 device ids. A limit's ceiling, the expiry's window and a name's characters are the server's, and its other refusals arrive as its errors (a 409 `already_revoked` or `key_expired` as `DecisionNodeError`). Each call has an `Async` form.
 
 ## Fallback
 
