@@ -2,7 +2,7 @@
 
 [DecisionNode](https://decisionnode.com) is a decision engine: send it text, JSON or images with a question, and it answers with calibrated probabilities.
 
-The PHP client for the [DecisionNode](https://decisionnode.com) API: ask yes-or-no, choice, score and number questions about any text, JSON, image or video, point to a spot or draw a box in an image, and get probabilities back. One-off decisions, live sessions that answer a stream of frames, and batches at half the price. Boosters add specialist readings of your images (an age, whether a picture was AI-generated) to a decision as evidence, and your own fine-tuned models are called by name.
+The PHP client for the [DecisionNode](https://decisionnode.com) API: ask yes-or-no, choice, score and number questions about any text, JSON, image or video, point to a spot or draw a box in an image, and get probabilities back. One-off decisions, live sessions that answer a stream of frames, and batches for less (Flash 50% off the live price, DecisionNode MoE 30% off). Boosters add specialist readings of your images (an age, whether a picture was AI-generated) to a decision as evidence, and your own fine-tuned models are called by name.
 
 Implements version 1.3 of the DecisionNode SDK specification, which the package states as `DecisionNode::SPEC_VERSION` (also `Bynn\DecisionNode\SPEC_VERSION`). Requires PHP 8.2 or later.
 
@@ -415,7 +415,7 @@ $closed = $dn->supervise(
 
 ## Batches
 
-The Batch API answers many decisions at half the price, within 24 hours. `runBatch` runs the whole lifecycle:
+The Batch API answers many decisions for less than live calls: Flash 50% off the live price, DecisionNode MoE 30% off. There is no set time at which a batch finishes, so poll for it; a request not answered 24 hours after the batch is finalized expires and is not billed. `runBatch` runs the whole lifecycle:
 
 ```php
 [$batch, $results] = $dn->runBatch([

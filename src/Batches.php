@@ -20,7 +20,9 @@ use GuzzleHttp\Promise\Utils;
 use Psr\Http\Message\StreamInterface;
 
 /**
- * The Batch API: many decisions at half the price, answered within 24 hours.
+ * The Batch API: many decisions for less than live calls (Flash 50% off the
+ * live price, DecisionNode MoE 30% off), with no set time to finish; a request
+ * not answered 24 hours after finalize expires and is not billed.
  * Reach it as `$dn->batches`; `$dn->runBatch()` runs the whole lifecycle.
  *
  *     $batch = $dn->batches->create([
