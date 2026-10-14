@@ -38,11 +38,14 @@ use Bynn\DecisionNode\Session;
 use Bynn\DecisionNode\SessionClosed;
 use Bynn\DecisionNode\TruthAnswer;
 use Bynn\DecisionNode\UnknownAnswer;
+use Bynn\DecisionNode\UsageItem;
+use Bynn\DecisionNode\UsagePage;
 use Bynn\DecisionNode\Video;
 use Bynn\DecisionNode\Collection;
 use Bynn\DecisionNode\CollectionItem;
 use Bynn\DecisionNode\CollectionItemPage;
 use Bynn\DecisionNode\Deleted;
+use Bynn\DecisionNode\KeyUsage;
 use Bynn\DecisionNode\FaceRecognitionReading;
 use Bynn\DecisionNode\VideoFrame;
 use GuzzleHttp\Client as GuzzleClient;
@@ -320,6 +323,21 @@ final class Suite
             parse_str((string) ($got->query ?? ''), $query);
             if (!Compare::same($exp->query, $query)) {
                 throw new Fail(sprintf('%s query: expected %s, got %s', $where, Compare::show($exp->query), Compare::show($query)));
+            }
+        }
+        if (isset($exp->query_all)) {
+            // Suite 1.18: every value of each parameter, a repeated one in
+            // its order; the order between parameters is free.
+            $all = [];
+            foreach (explode('&', (string) ($got->query ?? '')) as $part) {
+                if ($part === '') {
+                    continue;
+                }
+                [$name, $value] = array_pad(explode('=', $part, 2), 2, '');
+                $all[urldecode($name)][] = urldecode($value);
+            }
+            if (!Compare::same($exp->query_all, $all)) {
+                throw new Fail(sprintf('%s query: expected %s, got %s', $where, Compare::show($exp->query_all), Compare::show($all)));
             }
         }
         if (isset($exp->status) && ($got->status ?? null) !== $exp->status) {
@@ -774,7 +792,7 @@ final class Suite
                 throw new Fail(sprintf('request sequence[%d]: %s answered %s, expected %s', $i, $got, json_encode($rec->status ?? null), $spec->status));
             }
             $checks = new \stdClass();
-            foreach (['headers', 'header_patterns', 'absent_headers', 'body_checks', 'jsonl_count', 'jsonl_checks', 'body_base64', 'body_sha256', 'query'] as $key) {
+            foreach (['headers', 'header_patterns', 'absent_headers', 'body_checks', 'jsonl_count', 'jsonl_checks', 'body_base64', 'body_sha256', 'query', 'query_all'] as $key) {
                 if (property_exists($spec, $key)) {
                     $checks->{$key} = $spec->{$key};
                 }
@@ -977,6 +995,9 @@ final class Suite
         } elseif (str_starts_with($name, 'collections.')) {
             $target = $client->collections;
             $name = substr($name, strlen('collections.'));
+        } elseif (str_starts_with($name, 'usage.')) {
+            $target = $client->usage;
+            $name = substr($name, strlen('usage.'));
         }
         $method = self::METHOD_NAMES[$name] ?? lcfirst(str_replace('_', '', ucwords($name, '_')));
 
@@ -985,7 +1006,7 @@ final class Suite
             $arg = (string) $arg;
             $phpName = self::ARGUMENT_NAMES[$arg] ?? lcfirst(str_replace('_', '', ucwords($arg, '_')));
             $args[$phpName] = $name === 'decide_raw' ? $value : self::decode($value, $ctx);
-            if ($phpName === 'metadata' && $args[$phpName] instanceof \stdClass) {
+            if (in_array($phpName, ['metadata', 'labels'], true) && $args[$phpName] instanceof \stdClass) {
                 // An item's metadata is a PHP map: {} is [] and is sent as {}.
                 $args[$phpName] = json_decode((string) json_encode($args[$phpName]), true);
             }
@@ -1343,7 +1364,7 @@ final class Suite
     }
 
     /** The expectations of the collections calls' results. */
-    private const COLLECTION_KINDS = ['collection', 'collections', 'item', 'item_page', 'deleted'];
+    private const COLLECTION_KINDS = ['collection', 'collections', 'item', 'item_page', 'deleted', 'key_usage', 'usage_page', 'usage_items'];
 
     private static function collectionKind(\stdClass $exp): ?string
     {
@@ -1381,6 +1402,33 @@ final class Suite
             case 'item':
                 $got = self::item($result);
                 break;
+            case 'key_usage':
+                if (!$result instanceof KeyUsage) {
+                    throw new Fail($path . ': expected a KeyUsage, got ' . self::describe($result));
+                }
+                $got = $result->raw;
+                break;
+            case 'usage_page':
+                if (!$result instanceof UsagePage) {
+                    throw new Fail($path . ': expected a UsagePage, got ' . self::describe($result));
+                }
+                $got = $result->raw;
+                break;
+            case 'usage_items':
+                if (!is_array($result) || !is_array($expected)) {
+                    throw new Fail($path . ': expected a list of usage items, got ' . self::describe($result));
+                }
+                if (count($expected) !== count($result)) {
+                    throw new Fail(sprintf('%s: expected %d items, got %d', $path, count($expected), count($result)));
+                }
+                foreach (array_values($result) as $i => $item) {
+                    if (!$item instanceof UsageItem) {
+                        throw new Fail(sprintf('%s[%d]: expected a UsageItem, got %s', $path, $i, self::describe($item)));
+                    }
+                    Compare::match($expected[$i], $item->raw, sprintf('%s[%d]', $path, $i));
+                }
+
+                return;
             case 'item_page':
                 if (!$result instanceof CollectionItemPage) {
                     throw new Fail($path . ': expected a CollectionItemPage, got ' . self::describe($result));
@@ -1664,6 +1712,9 @@ final class Suite
                 case 'item':
                 case 'item_page':
                 case 'deleted':
+                case 'key_usage':
+                case 'usage_page':
+                case 'usage_items':
                     self::checkCollectionResult($spec->result, $spec->{$spec->result} ?? new \stdClass(), $result, $path . '.' . $spec->result);
                     break;
                 case 'batch_results':

@@ -315,6 +315,92 @@ final class LocalChecks
         }
     }
 
+    /** The usage reads' `granularity` values. */
+    public const USAGE_GRANULARITIES = ['none', 'hour', 'day', 'month'];
+    /** The usage reads' `group_by` values. */
+    public const USAGE_GROUPS = ['model', 'channel'];
+    /** The kinds of key `usage->list()` filters by. */
+    public const USAGE_SCOPES = ['full', 'decide', 'keys'];
+    /** The key statuses `usage->list()` filters by. */
+    public const USAGE_STATUSES = ['active', 'expired', 'revoked', 'all'];
+    /** The most keys one usage page holds. */
+    public const USAGE_PAGE_MAX = 1000;
+    /** The most `key_id` filters one usage read takes. */
+    public const USAGE_MAX_KEY_IDS = 100;
+
+    /**
+     * A usage read's `granularity` and `group_by`, as the API checks them
+     * while it reads the query. The period itself (its rounding, at most 400
+     * days, `hour` over at most 7) is the server's.
+     *
+     * @throws BadRequestError
+     */
+    public static function usagePeriod(?string $granularity, ?string $groupBy): void
+    {
+        if ($granularity !== null && !in_array($granularity, self::USAGE_GRANULARITIES, true)) {
+            throw self::bad('granularity is none, hour, day or month.');
+        }
+        if ($groupBy !== null && !in_array($groupBy, self::USAGE_GROUPS, true)) {
+            throw self::bad('group_by is model or channel.');
+        }
+    }
+
+    /**
+     * The filters of `usage->list()`, in the order the API reads them: each
+     * label (by name) a name of 1 to 32 of `a-z 0-9 _ . -` and a value of 1
+     * to 64 characters with no control character, the device id, each key id
+     * and at most 100 of them, the scope, the status and the limit. The
+     * cursor is the server's.
+     *
+     * @param array<array-key, mixed>|null $labels
+     * @param array<array-key, mixed>|null $keyIds
+     *
+     * @throws BadRequestError
+     */
+    public static function usageFilters(?array $labels, ?string $deviceId, ?array $keyIds, ?string $scope, ?string $status, ?int $limit): void
+    {
+        foreach ($labels ?? [] as $name => $value) {
+            if (!self::labelFilter($name, $value)) {
+                throw self::bad('A label filter is name:value, as labels are written.');
+            }
+        }
+        if ($deviceId !== null && (strlen($deviceId) < 1 || strlen($deviceId) > 128 || preg_match('/^[\x20-\x7E]+$/D', $deviceId) !== 1 || $deviceId[0] === ' ')) {
+            throw self::bad('device_id is 1 to 128 printable ASCII characters, not starting with a space.');
+        }
+        foreach (array_values($keyIds ?? []) as $i => $keyId) {
+            if (!is_string($keyId) || preg_match('/^key_[0-9a-f]{32}$/D', $keyId) !== 1) {
+                throw self::bad("key_id is a key's id, key_ and 32 hex digits.");
+            }
+            if ($i === self::USAGE_MAX_KEY_IDS) {
+                throw self::bad('At most 100 key_id filters.');
+            }
+        }
+        if ($scope !== null && !in_array($scope, self::USAGE_SCOPES, true)) {
+            throw self::bad('scope is full, decide or keys.');
+        }
+        if ($status !== null && !in_array($status, self::USAGE_STATUSES, true)) {
+            throw self::bad('status is active, expired, revoked or all.');
+        }
+        if ($limit !== null && ($limit < 1 || $limit > self::USAGE_PAGE_MAX)) {
+            throw self::bad('limit is a whole number from 1 to 1000.');
+        }
+    }
+
+    /**
+     * Whether a label filter is written as labels are: a name of 1 to 32 of
+     * `a-z 0-9 _ . -` and a value of 1 to 64 characters with no control
+     * character.
+     */
+    private static function labelFilter(mixed $name, mixed $value): bool
+    {
+        if (!is_string($name) || preg_match('/^[a-z0-9_.-]{1,32}$/D', $name) !== 1 || !is_string($value) || !mb_check_encoding($value, 'UTF-8')) {
+            return false;
+        }
+        $chars = mb_strlen($value, 'UTF-8');
+
+        return $chars >= 1 && $chars <= 64 && preg_match('/\p{Cc}/u', $value) !== 1;
+    }
+
     /**
      * A caller's value as an API message echoes it: its first `$most`
      * characters, any but printable ASCII as `\u{hex}`, then "..." when it

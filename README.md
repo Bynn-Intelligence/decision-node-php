@@ -362,6 +362,57 @@ $item = $dn->collections->updateItem($col->id, $item->id, label: null);
 - `listItems` pages with `offset` and `limit`, and finds the items of one `reference` or of a `referencePrefix`; the page carries `totalCapped`, `reference` and `referencePrefix` as sent.
 - Checked locally, with the API's entries: a name of 1 to 80 characters, a reference of 1 to 64 of `A-Z a-z 0-9 _ . : -`, a label of 1 to 128 characters, and metadata of at most 20 keys of 1 to 40 of `a-z 0-9 _`, each value a text of at most 500 characters, a number, or true or false. An enrolled image's URL is checked as a decision's.
 
+## Per-key usage
+
+Every call is metered on the key that made it. `$dn->usage` reads each key's calls and cost over a period, with a Full access key or a Manage device keys key, each result with its fields as sent and `raw`:
+
+```php
+$one = $dn->usage->key('key_7c2e9a41b0d34f6e8a5c1d2b3e4f5a60', granularity: 'day');   // the UTC month so far
+echo $one->totals['cost']['usd'], PHP_EOL;
+
+foreach ($dn->usage->all('2026-09-01T00:00:00Z', '2026-10-01T00:00:00Z', labels: ['customer' => 'acme']) as $item) {
+    echo $item->key['name'], ' ', $item->totals['requests'], ' ', $item->totals['cost']['usd'], PHP_EOL;
+}
+```
+
+- `key($keyId, $start, $end, $granularity, $groupBy)` reads one key; left out, the period is the UTC month so far. `list($start, $end, ...)` reads one page of every key the caller may read, revoked and expired keys included, filtered by `labels` (all must match), `deviceId`, `keyIds` (up to 100), `scope`, `status` and `includeEmpty`; `limit` and `cursor` page it. `all()` follows `nextCursor` until it is null, since a page can hold fewer keys than `limit`.
+- `start` and `end` are RFC 3339 and rounded to the hour. `granularity` (`none`, `hour`, `day`, `month`) adds `buckets`, and `groupBy` (`model` or `channel`) adds `byModel` or `byChannel`. A result's `asOf` says up to when its figures are complete.
+- Checked locally, with the API's messages: the `granularity`, the `groupBy`, each label filter, the `deviceId`, each key id and their number, the `scope`, the `status` and the `limit`. The period's own rules and the cursor are the server's. Each call has an `Async` form.
+
+## Keys for devices
+
+Give every device its own Decisions-only key from your provisioning server, with its own limits, daily spend cap and expiry. `$dn->keys` takes a Manage device keys key, made in the console and kept on your server; any other key gets a `PermissionDeniedError` (`key_scope_denied`). A device asks your server for its key and never calls `/v1/keys` itself.
+
+```php
+$manage = new DecisionNode(apiKey: getenv('DECISIONNODE_MANAGE_KEY') ?: null);
+
+$made = $manage->keys->create(
+    'Kiosk 0412',
+    deviceId: 'kiosk-0412',
+    labels: ['store' => '118', 'fw' => '2.4'],
+    limits: ['requests_per_second' => 5, 'tokens_per_second' => 20000],
+    dailySpendCapUsd: 2.0,
+    expiresAt: '2027-10-13T00:00:00Z',
+    idempotencyKey: 'enroll-kiosk-0412',   // a retry returns the same key and secret
+);
+// hand $made->secret to the device once, over your own channel; never log it. Keep $made->key->id.
+
+$page = $manage->keys->list(labels: ['store' => '118']);
+$manage->keys->update($made->key->id, labels: ['store' => '119']);
+$manage->keys->revoke($made->key->id);
+
+$counted = $manage->keys->revokeByLabel(['fw' => '2.4'], dryRun: true);   // $counted->wouldRevoke
+do {
+    $done = $manage->keys->revokeByLabel(['fw' => '2.4']);
+} while ($done->more);
+```
+
+- `create` sends an `Idempotency-Key`, yours or a new UUID for each call, the same on every attempt: a retry within 24 hours returns the same key and its secret again, and makes no second key. The secret is shown only then.
+- `list` pages the workspace's Decisions-only keys, newest first, by `labels`, `deviceId` and `status` (`active` by default, `expired`, `revoked` or `all`); `all()` follows `nextCursor`. `get` reads one key.
+- `update` sends only the arguments given. `labels` replaces them all, and `labels`, `limits`, `dailySpendCapUsd` and `expiresAt` given as `null` clear them. A key's kind and `deviceId` never change; an expired key takes only a rename.
+- `revoke` revokes one key at once. `revokeByLabel` revokes every active key matching all the labels, at most 10,000 a call: call it again while `more` is true.
+- The API checks every field; its refusals arrive as its errors (`ValidationError`, a 409 `already_revoked` or `key_expired` as `DecisionNodeError`). Each call has an `Async` form.
+
 ## Fallback
 
 When no worker can take a request for `decisionnode-moe` at once, the API answers it with `decisionnode-flash` rather than make it wait. `$d->model` is then the model that answered, and `$d->fallback` says so: a `Fallback` with `servedModel` and `requestedModel`, from the `x-decisionnode-fallback` and `x-decisionnode-requested-model` headers; on an ordinary answer it is `null`. To have such a request wait for its own model instead, pass `fallback: false` (the helpers, `decideMany`'s requests and `BatchRequest` take it too): it then gets the 529, an `OverloadedError` retried like any other. Left out, nothing is sent and the API's default applies.
@@ -460,11 +511,11 @@ Only a 2xx response with a JSON body is a success. Redirects are never followed,
 | 400 | `BadRequestError`; `ContextLimitError` when the request is larger than the model's input limit | |
 | 401 | `AuthenticationError` (also raised before sending when no API key is set) | |
 | 402 | `InsufficientCreditError` | |
-| 403 | `RefusalError` when the request is refused under the usage policy; `PermissionDeniedError` otherwise (`booster_not_enabled`, `key_scope_denied`, a suspended workspace) | `category` (`harm` or `self_harm`), `safety` |
+| 403 | `RefusalError` when the request is refused under the usage policy; `PermissionDeniedError` otherwise (`booster_not_enabled`, `key_scope_denied`, a suspended workspace, and a publishable key's `origin_not_allowed` and `model_not_allowed`, whose `details['allowed']` lists the key's models) | `category` (`harm` or `self_harm`), `safety` |
 | 404 | `NotFoundError` | |
 | 413 | `RequestTooLargeError`, never retried | |
 | 422 | `ValidationError` | `entries` |
-| 429 | `RateLimitError`; `SessionLimitError` when a key holds as many open sessions as it may | `retryAfter` (seconds) |
+| 429 | `RateLimitError` (a publishable key's per-address rate and calls in flight carry `details['reason']` `client_rate` or `in_flight`), never retried when `errorType` is `key_spend_cap_reached`, a key's daily spend cap, reached until 00:00 UTC (`details`: `resets_at`, `cap`, `spent`); `SessionLimitError` when a key holds as many open sessions as it may | `retryAfter` (seconds) |
 | 529 (also `booster_unavailable`; never retried when `details` has the reason `enrollment_unpriced`) | `OverloadedError` | `retryAfter` (seconds) |
 | other 5xx, a 2xx whose body is not JSON, or a 2xx where the answer of `check`, `classify`, `score` or `number` is missing or malformed | `ServerError` | |
 | any other status (a 3xx, 405, 409, 410, 413, 408 once its retries are used up) | `DecisionNodeError` itself | |
@@ -494,6 +545,7 @@ The SDK checks every fixed rule the API documents before sending, so the server 
 | A choice with no options or more than 255, a score with more than 10 levels, a truth question with neither instructions nor criteria, a number, point or box question without instructions | `BadRequestError` with the API's message and no `errorType` |
 | An unknown question type, objects and arrays nested more than 128 deep, an image fault (not JPEG, PNG or WebP, over 10 MB or 40 megapixels, an empty id, an id over 64 characters counted as code points ("Image 1: its id is longer than 64 characters.", images counted from 0), a repeated id, an image URL that is not `https`), a video fault (see [Videos](#videos)), an upload id given with another media type, a batch request without a valid or with a repeated `custom_id`, an empty `add`, `list` paging out of range | `BadRequestError`, `errorType` `api_usage_error` |
 | A request body, or a batch line, over 25 MiB (26,214,400 bytes): a long state, many video frames, inline images | `RequestTooLargeError`, `errorType` `request_too_large_error` |
+| A usage read's `granularity`, `groupBy`, label filter, `deviceId`, key id (or more than 100 of them), `scope`, `status` or `limit` out of the API's bounds | `BadRequestError`, `errorType` `api_usage_error`, the API's message |
 | An image URL over 2,048 characters, with user information, on a port other than 443, or on a literal private, loopback or reserved address | `BadRequestError`, `errorType` `image_url_refused` |
 | More than 16 images or more than 4 videos in a request (a held lower image limit once `models()` has been called): one `too_long` entry for each, after the questions' entries | `ValidationError` |
 | A point or box question in a request without images, without `image` when the request has two or more, or with an `image` that is not one of the request's image ids, or `units` other than `pixels` and `normalized` | `ValidationError` with every such entry of the request in one list |
@@ -514,7 +566,7 @@ A problem with the arguments themselves is PHP's own `InvalidArgumentException`,
 
 ## Timeouts and retries
 
-Each attempt times out after 10 seconds, counted over the whole attempt: from sending the request to the last byte of the response body, not per network read. A request is retried twice after the first attempt on 408, 429, any 5xx, timeouts and dropped connections, waiting what the server asks for (`retry-after-ms`, else `Retry-After` in seconds or as an HTTP date, never more than 60 s) or else backing off exponentially from 0.5 s with jitter, up to 8 s. 400, 401, 402, 403, 404 and 422 are never retried. A decision changes nothing on the server, so a retry is always safe. An image upload's `PUT` is retried the same way on 5xx and dropped connections, and has its own timeout, `uploadTimeout` (60 s by default), since an image of several MB may take longer than an API attempt is allowed. Batch `create`, `add` and `finalize` are the exception: retried only on 429 and 529 (see [Batches](#batches)).
+Each attempt times out after 10 seconds, counted over the whole attempt: from sending the request to the last byte of the response body, not per network read. A request is retried twice after the first attempt on 408, 429, any 5xx, timeouts and dropped connections, waiting what the server asks for (`retry-after-ms`, else `Retry-After` in seconds or as an HTTP date, never more than 60 s) or else backing off exponentially from 0.5 s with jitter, up to 8 s. 400, 401, 402, 403, 404 and 422 are never retried, nor is a 429 `key_spend_cap_reached`, which holds until 00:00 UTC. A decision changes nothing on the server, so a retry is always safe. An image upload's `PUT` is retried the same way on 5xx and dropped connections, and has its own timeout, `uploadTimeout` (60 s by default), since an image of several MB may take longer than an API attempt is allowed. Batch `create`, `add` and `finalize` are the exception: retried only on 429 and 529 (see [Batches](#batches)).
 
 ```php
 $dn = new DecisionNode(timeout: 5.0, maxRetries: 4);

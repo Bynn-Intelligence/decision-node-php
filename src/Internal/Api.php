@@ -60,6 +60,20 @@ final class Api
     }
 
     /**
+     * A random UUID (version 4): one call's Idempotency-Key, sent on every
+     * attempt of that call.
+     */
+    public static function idempotencyKey(): string
+    {
+        $b = random_bytes(16);
+        $b[6] = chr((ord($b[6]) & 0x0f) | 0x40);
+        $b[8] = chr((ord($b[8]) & 0x3f) | 0x80);
+        $hex = bin2hex($b);
+
+        return sprintf('%s-%s-%s-%s-%s', substr($hex, 0, 8), substr($hex, 8, 4), substr($hex, 12, 4), substr($hex, 16, 4), substr($hex, 20, 12));
+    }
+
+    /**
      * @return array{ssl: array<string, mixed>, proxy: string|null, no_proxy: list<string>}
      */
     public function socketSettings(): array
@@ -161,6 +175,11 @@ final class Api
         // A collection whose face search has no price yet stays so: the
         // 529 enrollment_unpriced is never retried.
         if ($status === 529 && Errors::detailReason($text) === 'enrollment_unpriced') {
+            return false;
+        }
+        // A key whose daily spend cap is reached stays so until 00:00 UTC:
+        // the 429 key_spend_cap_reached is never retried.
+        if ($status === 429 && Errors::errorType($text) === 'key_spend_cap_reached') {
             return false;
         }
         if ($policy === self::RETRY_MUTATION) {

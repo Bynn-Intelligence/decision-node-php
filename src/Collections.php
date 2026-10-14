@@ -65,7 +65,7 @@ final class Collections
     {
         LocalChecks::collection($type, $name);
 
-        return $this->request('POST', '/v1/collections', Json::encode(['type' => $type, 'name' => $name]), Api::RETRY_IDEMPOTENT, self::idempotencyKey())->then(
+        return $this->request('POST', '/v1/collections', Json::encode(['type' => $type, 'name' => $name]), Api::RETRY_IDEMPOTENT, Api::idempotencyKey())->then(
             static fn (array $body): Collection => Collection::fromArray($body),
         );
     }
@@ -217,7 +217,7 @@ final class Collections
         }
         $path = self::path($collectionId) . '/items/' . rawurlencode($itemId);
 
-        return $this->request('PATCH', $path, Json::encode($body), Api::RETRY_IDEMPOTENT, self::idempotencyKey())->then(
+        return $this->request('PATCH', $path, Json::encode($body), Api::RETRY_IDEMPOTENT, Api::idempotencyKey())->then(
             static fn (array $item): CollectionItem => CollectionItem::fromArray($item),
         );
     }
@@ -246,7 +246,7 @@ final class Collections
                 LocalChecks::bodySize(strlen($encoded));
 
                 // A resend after a stale upload is another body, so it has its own key.
-                return $this->api->request('POST', $path, $encoded, Api::RETRY_IDEMPOTENT, idempotencyKey: self::idempotencyKey())->then(
+                return $this->api->request('POST', $path, $encoded, Api::RETRY_IDEMPOTENT, idempotencyKey: Api::idempotencyKey())->then(
                     static fn (array $result): CollectionItem => CollectionItem::fromArray(self::object($result)),
                     function (mixed $reason) use ($path, $image, $reference, $label, $metadata, $again, $placed): PromiseInterface {
                         if (!$again && $placed !== [] && $reason instanceof BadRequestError && in_array($reason->errorType, self::STALE_UPLOAD, true)) {
@@ -367,19 +367,5 @@ final class Collections
             body: $result['body'],
             headers: $headers,
         );
-    }
-
-    /**
-     * A random UUID (version 4): one call's Idempotency-Key, sent on every
-     * attempt of that call.
-     */
-    private static function idempotencyKey(): string
-    {
-        $b = random_bytes(16);
-        $b[6] = chr((ord($b[6]) & 0x0f) | 0x40);
-        $b[8] = chr((ord($b[8]) & 0x3f) | 0x80);
-        $hex = bin2hex($b);
-
-        return sprintf('%s-%s-%s-%s-%s', substr($hex, 0, 8), substr($hex, 8, 4), substr($hex, 12, 4), substr($hex, 16, 4), substr($hex, 20, 12));
     }
 }

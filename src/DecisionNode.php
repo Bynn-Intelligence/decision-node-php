@@ -106,6 +106,12 @@ final class DecisionNode
     /** The Collections API: the workspace's collections of faces, which the face_recognition booster searches. */
     public readonly Collections $collections;
 
+    /** Per-key usage: each key's calls and cost over a period. */
+    public readonly UsageService $usage;
+
+    /** The Keys API: Decisions-only keys for devices, with a Manage device keys key. */
+    public readonly Keys $keys;
+
     private readonly Api $api;
 
     private readonly Images $images;
@@ -180,6 +186,8 @@ final class DecisionNode
         $this->held = new Held();
         $this->batches = new Batches($this->api, $this->images, $this->model, $this->held);
         $this->collections = new Collections($this->api, $this->images);
+        $this->usage = new UsageService($this->api);
+        $this->keys = new Keys($this->api);
     }
 
     /**
