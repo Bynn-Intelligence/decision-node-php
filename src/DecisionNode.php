@@ -47,7 +47,7 @@ use Psr\Log\LoggerInterface;
  */
 final class DecisionNode
 {
-    public const VERSION = '0.3.1';
+    public const VERSION = '0.3.2';
 
     /** The version of the DecisionNode SDK specification this client implements. */
     public const SPEC_VERSION = '1.3';
