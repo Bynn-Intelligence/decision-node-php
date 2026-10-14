@@ -1337,7 +1337,6 @@ final class Suite
             'ended_at' => $b->endedAt,
             'results_url' => $b->resultsUrl,
             'results_expire_at' => $b->resultsExpireAt,
-            'price_factor' => $b->priceFactor,
             'usage' => $b->usage,
             'error' => $b->error,
         ] + $b->raw;

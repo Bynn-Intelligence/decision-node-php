@@ -16,6 +16,12 @@ namespace Bynn\DecisionNode;
  * (trained, not deployed) or any other value as the API sent it. A catalogue
  * entry has all four null. `version` is the
  * pinned name the entry resolves to, when the entry states it.
+ *
+ * The prices are as sent, in USD per million tokens: `pricePerMillionInput`
+ * (text), `pricePerMillionOutput`, `pricePerMillionImage` and
+ * `pricePerMillionVideo`, and `batchPriceFactor`, the share of the live
+ * prices a batch line pays (MoE 0.7, Flash 0.5), null on a fine-tuned model.
+ * They are in `limits` too.
  */
 final class ModelInfo
 {
@@ -34,6 +40,11 @@ final class ModelInfo
         public readonly ?string $base = null,
         public readonly ?int $adapterVersion = null,
         public readonly ?string $status = null,
+        public readonly int|float|null $pricePerMillionInput = null,
+        public readonly int|float|null $pricePerMillionOutput = null,
+        public readonly int|float|null $pricePerMillionImage = null,
+        public readonly int|float|null $pricePerMillionVideo = null,
+        public readonly int|float|null $batchPriceFactor = null,
     ) {
     }
 
@@ -46,6 +57,7 @@ final class ModelInfo
     {
         $limits = $raw;
         unset($limits['name'], $limits['description'], $limits['release_date']);
+        $number = static fn (string $key): int|float|null => is_int($raw[$key] ?? null) || is_float($raw[$key] ?? null) ? $raw[$key] : null;
 
         return new self(
             name: is_string($raw['name'] ?? null) ? $raw['name'] : null,
@@ -58,6 +70,11 @@ final class ModelInfo
             base: is_string($raw['base'] ?? null) ? $raw['base'] : null,
             adapterVersion: is_int($raw['adapter_version'] ?? null) ? $raw['adapter_version'] : null,
             status: is_string($raw['status'] ?? null) ? $raw['status'] : null,
+            pricePerMillionInput: $number('price_per_million_input'),
+            pricePerMillionOutput: $number('price_per_million_output'),
+            pricePerMillionImage: $number('price_per_million_image'),
+            pricePerMillionVideo: $number('price_per_million_video'),
+            batchPriceFactor: $number('batch_price_factor'),
         );
     }
 }

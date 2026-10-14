@@ -125,7 +125,7 @@ Answers are read by question id, `$d['route']` or `$d->answers['route']`. An ans
 | `score($state, $instructions, $levels)` | One `score` question | `ScoreAnswer`; a `ServerError` when the answer is missing or malformed |
 | `number($state, $instructions, $min, $max, $step)` | One `number` question | `NumberAnswer`; a `ServerError` when the answer is missing or malformed |
 | `gate($action, $context)` | Whether an action should run: a `risk` score, a `touches_production` truth and an `allow`, `confirm` or `block` verdict (wording below) | `Decision` |
-| `models()` | `GET /v1/models` | A list of `ModelInfo` with `name`, `description`, `releaseDate`, `version` and `limits` (every other field of the entry, such as `context_tokens`, `number_max_grid_values`, `upload_max_bytes`, `sessions` and `batch`); your fine-tuned models also have `fineTuned`, `base`, `adapterVersion` and `status` (see [Fine-tuned models](#fine-tuned-models)) |
+| `models()` | `GET /v1/models` | A list of `ModelInfo` with `name`, `description`, `releaseDate`, `version` and `limits` (every other field of the entry, such as `context_tokens`, `number_max_grid_values`, `upload_max_bytes`, `sessions` and `batch`); the prices as `pricePerMillionInput`, `pricePerMillionOutput`, `pricePerMillionImage`, `pricePerMillionVideo` and `batchPriceFactor`; your fine-tuned models also have `fineTuned`, `base`, `adapterVersion` and `status` (see [Fine-tuned models](#fine-tuned-models)) |
 | `upload($images)` | Uploads local images whatever their size | One upload id per image |
 | `openSession(...)` | `POST /v1/sessions` | `Session` (see [Sessions](#sessions)) |
 | `supervise($body, $feed, $onReply)` | Keeps a session running over a long feed | The last `SessionClosed`, or `null` |
@@ -415,7 +415,7 @@ $closed = $dn->supervise(
 
 ## Batches
 
-The Batch API answers many decisions for less than live calls: Flash 50% off the live price, DecisionNode MoE 30% off. There is no set time at which a batch finishes, so poll for it; a request not answered 24 hours after the batch is finalized expires and is not billed. `runBatch` runs the whole lifecycle:
+The Batch API answers many decisions for less than live calls: Flash 50% off the live price, DecisionNode MoE 30% off. There is no set time at which a batch finishes, so poll for it; a request not answered 24 hours after the batch is finalized expires and is not billed. Each model's batch price is its `batchPriceFactor` in `models()` (none on a fine-tuned model), and each result line's charge is in its usage. `runBatch` runs the whole lifecycle:
 
 ```php
 [$batch, $results] = $dn->runBatch([

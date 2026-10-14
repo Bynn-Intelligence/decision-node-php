@@ -88,6 +88,13 @@ final class Compare
             $have = self::map($actual);
             if ($have !== null) {
                 foreach (get_object_vars($expected) as $key => $value) {
+                    if ($value instanceof \stdClass && get_object_vars($value) === ['$absent' => true]) {
+                        // Suite 1.17: the key must not be there at all.
+                        if (array_key_exists($key, $have)) {
+                            throw new Fail(sprintf('%s.%s: expected no such key, got %s', $path, $key, self::show($have[$key])));
+                        }
+                        continue;
+                    }
                     if (!array_key_exists($key, $have)) {
                         throw new Fail(sprintf('%s.%s: missing (expected %s)', $path, $key, self::show($value)));
                     }

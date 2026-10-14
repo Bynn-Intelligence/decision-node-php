@@ -325,6 +325,17 @@ final class BoosterTest extends TestCase
         self::assertStringEndsWith(',"boosters":["face_detection",{"name":"ocr","options":{"prompt":"What is the total on the receipt?"}},{"name":"face_recognition","options":{"collection":"celebrities","threshold":0.9}}]}', (string) $this->sent()->getBody());
     }
 
+    public function testModelPrices(): void
+    {
+        $dn = $this->client([self::json(200, ['models' => [
+            ['name' => 'decisionnode-moe', 'price_per_million_input' => 0.042, 'price_per_million_output' => 0, 'price_per_million_image' => 0.09, 'price_per_million_video' => 0.09, 'batch_price_factor' => 0.7],
+            ['name' => 'decisionnode-flash@acme/triage', 'price_per_million_input' => 0.055, 'fine_tuned' => true],
+        ]])]);
+        [$moe, $tuned] = $dn->models();
+        self::assertSame([0.042, 0, 0.09, 0.09, 0.7], [$moe->pricePerMillionInput, $moe->pricePerMillionOutput, $moe->pricePerMillionImage, $moe->pricePerMillionVideo, $moe->batchPriceFactor]);
+        self::assertSame([0.055, null, null], [$tuned->pricePerMillionInput, $tuned->pricePerMillionImage, $tuned->batchPriceFactor]);
+    }
+
     public function testFineTunedModels(): void
     {
         $dn = $this->client([

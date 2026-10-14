@@ -9,6 +9,10 @@ namespace Bynn\DecisionNode;
  *
  * `state` is one of `draft`, `queued`, `running`, `completed`, `failed`,
  * `expired` or `cancelled`; `endedAt` is set once the batch has ended.
+ *
+ * A batch states no price: the batch price is each model's
+ * `batchPriceFactor` in `models()` (MoE 0.7, Flash 0.5, none on a fine-tuned
+ * model), and each line's charge is in its usage.
  */
 final class Batch
 {
@@ -28,7 +32,6 @@ final class Batch
         public readonly ?string $endedAt,
         public readonly ?string $resultsUrl,
         public readonly ?string $resultsExpireAt,
-        public readonly int|float|null $priceFactor,
         public readonly ?array $usage,
         public readonly ?array $error,
         public readonly array $raw,
@@ -57,7 +60,6 @@ final class Batch
                 $counters[(string) $name] = $count;
             }
         }
-        $price = $raw['price_factor'] ?? null;
 
         return new self(
             id: $string('id'),
@@ -69,7 +71,6 @@ final class Batch
             endedAt: $string('ended_at'),
             resultsUrl: $string('results_url'),
             resultsExpireAt: $string('results_expire_at'),
-            priceFactor: is_int($price) || is_float($price) ? $price : null,
             usage: is_array($raw['usage'] ?? null) ? $raw['usage'] : null,
             error: is_array($raw['error'] ?? null) ? $raw['error'] : null,
             raw: $raw,

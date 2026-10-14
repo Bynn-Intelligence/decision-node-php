@@ -36,7 +36,6 @@ final class BatchesTest extends TestCase
             'ended_at' => in_array($state, ['completed', 'failed', 'expired', 'cancelled'], true) ? '2026-10-06T10:00:00Z' : null,
             'results_url' => null,
             'results_expire_at' => null,
-            'price_factor' => 0.5,
             'usage' => ['input_tokens' => 0, 'output_tokens' => 0],
             'error' => null,
         ], $headers);
@@ -51,7 +50,6 @@ final class BatchesTest extends TestCase
         ]);
         self::assertInstanceOf(Batch::class, $batch);
         self::assertSame('draft', $batch->state);
-        self::assertSame(0.5, $batch->priceFactor);
         $sent = $this->sent();
         self::assertSame('application/x-ndjson', $sent->getHeaderLine('Content-Type'));
         $lines = explode("\n", rtrim((string) $sent->getBody(), "\n"));
