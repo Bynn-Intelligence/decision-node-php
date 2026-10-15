@@ -325,6 +325,47 @@ final class BoosterTest extends TestCase
         self::assertInstanceOf(UnknownReading::class, $cell);
     }
 
+    public function testVisionReadingShapes(): void
+    {
+        $depth = ['image' => 'cam', 'ahead' => 1, 'directions' => [1, 2, 3, 4, 5, 6, 7], 'ground' => true, 'grid_rows' => 1, 'grid_cols' => 1, 'grid' => [[1]],
+            'depth_min' => 1, 'depth_max' => 2, 'depth_median' => 1, 'width' => 10, 'height' => 10];
+        $noAhead = $depth;
+        unset($noAhead['ahead']);
+        $pad = ['label' => 'pad', 'score' => 0.3, 'box' => [0.1, 0.1, 0.2, 0.2], 'polygon' => [[0.1, 0.1]], 'area' => 0.01, 'centroid' => [0.15, 0.15]];
+        $segment = static fn (int $width, array $instance): array => ['image' => 'cam', 'width' => $width, 'height' => 10, 'prompts' => ['pad'],
+            'instances' => [$instance], 'depth_source' => 'bynn_depth', 'assumed_hfov_deg' => 65];
+        $d = $this->client([self::json(200, [
+            'model' => 'm', 'answers' => [],
+            'evidence' => [
+                'bynn_depth' => ['status' => 'ok', 'results' => [
+                    $noAhead,
+                    ['directions' => [1, 2, 3, 4, 5, 6]] + $depth,
+                    ['grid_rows' => -1] + $depth,
+                    ['width' => 10.5] + $depth,
+                    ['height' => -10] + $depth,
+                ]],
+                'bynn_segment' => ['status' => 'ok', 'results' => [
+                    $segment(10, $pad + ['depth' => ['median' => 4.2], 'size_m' => ['width' => 1, 'height' => 2]]),
+                    $segment(-1, $pad),
+                    $segment(10, $pad + ['size_m' => ['width' => null, 'height' => 2]]),
+                ]],
+            ],
+        ])])->decide(questions: ['q' => truth('?')]);
+        self::assertNotNull($d->evidence);
+        [$first, $six, $rows, $width, $height] = $d->evidence['bynn_depth']->results;
+        self::assertInstanceOf(\Bynn\DecisionNode\DepthReading::class, $first);
+        self::assertNull($first->ahead);
+        foreach ([$six, $rows, $width, $height] as $r) {
+            self::assertInstanceOf(UnknownReading::class, $r);
+        }
+        [$ok, $negative, $nullSize] = $d->evidence['bynn_segment']->results;
+        self::assertInstanceOf(\Bynn\DecisionNode\SegmentReading::class, $ok);
+        self::assertSame([null, ['median' => 4.2, 'opening_median' => null, 'opening_rim_median' => null], ['width' => 1, 'height' => 2, 'opening' => null]],
+            [$ok->instances[0]['opening'], $ok->instances[0]['depth'], $ok->instances[0]['size_m']]);
+        self::assertInstanceOf(UnknownReading::class, $negative);
+        self::assertInstanceOf(UnknownReading::class, $nullSize);
+    }
+
     public function testSegmentReading(): void
     {
         $gate = ['label' => 'gate', 'score' => 0.91, 'box' => [0.31, 0.22, 0.58, 0.81], 'polygon' => [[0.31, 0.22], [0.58, 0.22], [0.58, 0.81]], 'area' => 0.12, 'centroid' => [0.45, 0.47],

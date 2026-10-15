@@ -7,7 +7,8 @@ namespace Bynn\DecisionNode;
 /**
  * Segment Vision's (`bynn_segment`) reading of one picture: the picture's
  * `width` and `height` in pixels, the `prompts` as read, and `instances`, the
- * matches by score (empty when none was found), each as sent: `label` (the
+ * matches by score (empty when none was found), each as sent, with `opening`,
+ * `depth` and `size_m` (and its `opening`) null when not sent: `label` (the
  * phrase it matched), `score`, `box` `[x1, y1, x2, y2]`, `polygon` (its
  * outline, `[[x, y], ...]`), `area` (its share of the picture), `centroid`
  * `[x, y]`, `opening` (null, or the largest hole it encloses: `polygon`,
@@ -43,7 +44,7 @@ final class SegmentReading extends Reading
      */
     public static function wellFormed(array $raw): bool
     {
-        if (!is_string($raw['image'] ?? null) || !is_int($raw['width'] ?? null) || !is_int($raw['height'] ?? null)
+        if (!is_string($raw['image'] ?? null) || !is_int($raw['width'] ?? null) || $raw['width'] < 0 || !is_int($raw['height'] ?? null) || $raw['height'] < 0
             || (($raw['depth_source'] ?? null) !== null && !is_string($raw['depth_source']))
             || (($raw['assumed_hfov_deg'] ?? null) !== null && !self::isNumber($raw['assumed_hfov_deg']))) {
             return false;
@@ -90,11 +91,11 @@ final class SegmentReading extends Reading
         }
         $size = $m['size_m'] ?? null;
         if ($size !== null) {
-            if (!is_array($size) || !self::nullableNumbers($size, ['width', 'height'])) {
+            if (!is_array($size) || !self::isNumber($size['width'] ?? null) || !self::isNumber($size['height'] ?? null)) {
                 return false;
             }
             $sizeOpening = $size['opening'] ?? null;
-            if ($sizeOpening !== null && (!is_array($sizeOpening) || !self::nullableNumbers($sizeOpening, ['width', 'height']))) {
+            if ($sizeOpening !== null && (!is_array($sizeOpening) || !self::isNumber($sizeOpening['width'] ?? null) || !self::isNumber($sizeOpening['height'] ?? null))) {
                 return false;
             }
         }
@@ -103,7 +104,7 @@ final class SegmentReading extends Reading
     }
 
     /**
-     * Whether each key is there, a number or null.
+     * Whether each key is a number, null or not sent.
      *
      * @param array<array-key, mixed> $m
      * @param list<string>            $keys
@@ -111,7 +112,7 @@ final class SegmentReading extends Reading
     private static function nullableNumbers(array $m, array $keys): bool
     {
         foreach ($keys as $key) {
-            if (!array_key_exists($key, $m) || ($m[$key] !== null && !self::isNumber($m[$key]))) {
+            if (($m[$key] ?? null) !== null && !self::isNumber($m[$key])) {
                 return false;
             }
         }
@@ -168,6 +169,13 @@ final class SegmentReading extends Reading
         foreach (is_array($raw['instances'] ?? null) ? $raw['instances'] : [] as $instance) {
             if (is_array($instance)) {
                 /** @var array<string, mixed> $instance */
+                $instance += ['opening' => null, 'depth' => null, 'size_m' => null];
+                if (is_array($instance['depth'])) {
+                    $instance['depth'] += ['median' => null, 'opening_median' => null, 'opening_rim_median' => null];
+                }
+                if (is_array($instance['size_m'])) {
+                    $instance['size_m'] += ['opening' => null];
+                }
                 $instances[] = $instance;
             }
         }

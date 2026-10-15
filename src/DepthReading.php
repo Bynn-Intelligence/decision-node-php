@@ -8,7 +8,8 @@ namespace Bynn\DecisionNode;
  * Depth Vision's (`bynn_depth`) reading of one picture, in meters: `ahead`,
  * the nearest obstacle straight ahead (the middle third of the picture's
  * width), the floor left out, null when none is found; `directions`, the same
- * in 7 equal strips from left to right, each null when none; `ground`, true
+ * in 7 equal strips from left to right, each null when none (any other count
+ * makes the reading an UnknownReading); `ground`, true
  * when a floor or ground was found and left out; `grid`, `gridRows` rows of
  * `gridCols` distances, row by row from the top left; `depthMin`, `depthMax`
  * and `depthMedian`; and the picture's `width` and `height` in pixels. The
@@ -48,10 +49,14 @@ final class DepthReading extends Reading
      */
     public static function wellFormed(array $raw): bool
     {
-        if (!is_string($raw['image'] ?? null) || !array_key_exists('ahead', $raw) || ($raw['ahead'] !== null && !self::isNumber($raw['ahead']))
-            || !is_bool($raw['ground'] ?? null) || !is_int($raw['grid_rows'] ?? null) || !is_int($raw['grid_cols'] ?? null)
-            || !is_int($raw['width'] ?? null) || !is_int($raw['height'] ?? null)) {
+        if (!is_string($raw['image'] ?? null) || (($raw['ahead'] ?? null) !== null && !self::isNumber($raw['ahead']))
+            || !is_bool($raw['ground'] ?? null)) {
             return false;
+        }
+        foreach (['grid_rows', 'grid_cols', 'width', 'height'] as $key) {
+            if (!is_int($raw[$key] ?? null) || $raw[$key] < 0) {
+                return false;
+            }
         }
         foreach (['depth_min', 'depth_max', 'depth_median'] as $key) {
             if (!self::isNumber($raw[$key] ?? null)) {
@@ -59,7 +64,7 @@ final class DepthReading extends Reading
             }
         }
         $directions = $raw['directions'] ?? null;
-        if (!is_array($directions) || !array_is_list($directions)) {
+        if (!is_array($directions) || !array_is_list($directions) || count($directions) !== 7) {
             return false;
         }
         foreach ($directions as $d) {

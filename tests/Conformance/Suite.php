@@ -52,6 +52,8 @@ use Bynn\DecisionNode\KeysRevoked;
 use Bynn\DecisionNode\KeyUsage;
 use Bynn\DecisionNode\RevokedKey;
 use Bynn\DecisionNode\FaceRecognitionReading;
+use Bynn\DecisionNode\DepthReading;
+use Bynn\DecisionNode\SegmentReading;
 use Bynn\DecisionNode\VideoFrame;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\HandlerStack;
@@ -1348,6 +1350,11 @@ final class Suite
             $r instanceof OcrReading => ['kind' => 'ocr', 'image' => $r->image, 'text' => $r->text, 'truncated' => $r->truncated],
             $r instanceof FaceDetectionReading => ['kind' => 'face_detection', 'image' => $r->image, 'faces' => $r->faces, 'detections' => $r->detections],
             $r instanceof FaceRecognitionReading => ['kind' => 'face_recognition', 'image' => $r->image, 'collection_name' => $r->collectionName, 'faces' => $r->faces, 'matches' => $r->matches],
+            $r instanceof DepthReading => ['kind' => 'bynn_depth', 'image' => $r->image, 'ahead' => $r->ahead, 'directions' => $r->directions, 'ground' => $r->ground,
+                'grid_rows' => $r->gridRows, 'grid_cols' => $r->gridCols, 'grid' => $r->grid, 'depth_min' => $r->depthMin, 'depth_max' => $r->depthMax,
+                'depth_median' => $r->depthMedian, 'width' => $r->width, 'height' => $r->height],
+            $r instanceof SegmentReading => ['kind' => 'bynn_segment', 'image' => $r->image, 'width' => $r->width, 'height' => $r->height, 'prompts' => $r->prompts,
+                'instances' => $r->instances, 'depth_source' => $r->depthSource, 'assumed_hfov_deg' => $r->assumedHfovDeg],
             default => ['kind' => 'unknown', 'raw' => $r->raw],
         };
     }

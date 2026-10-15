@@ -40,11 +40,12 @@ Implements version 1.3 of the DecisionNode SDK specification (`SPEC_VERSION` `"1
 
 ### Changed
 
+- A Depth Vision reading whose `directions` is not exactly 7 entries, or whose grid sides or picture size are not whole numbers of 0 or more, is an `UnknownReading`, as is a Segment Vision reading whose picture size is not, or a match whose size in meters is not two numbers; `ahead` and a match's depth medians may be left out (null). A Segment Vision match always carries `opening`, `depth` and `size_m`, null when not sent.
 - `Batch` has no `priceFactor`: the API does not send it. The batch price is each model's `batchPriceFactor`, and each line's charge is in its usage.
 - The default model is `decisionnode-moe` (it was `decisionnode-latest`), the family id that always means the current release; `decisionnode-flash` is the fast one. A pinned id is `decisionnode-<family>-<version>`, read from the model list, and an answer names the pinned id that answered. The earlier ids stay accepted by the API.
 - The booster errors map to the existing classes: `booster_unknown` and `booster_input_mismatch` are a `BadRequestError`, `booster_not_enabled` a `PermissionDeniedError`, and `booster_unavailable` an `OverloadedError`, retried like any 529.
 - A 429 `key_spend_cap_reached`, a key's daily spend cap, is never retried: it holds until 00:00 UTC.
-- The conformance tests run suite 1.20.
+- The conformance tests run suite 1.21.
 
 ## [0.2.0] - Unreleased
 
