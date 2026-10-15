@@ -289,6 +289,69 @@ final class BoosterTest extends TestCase
         self::assertInstanceOf(UnknownReading::class, $badMatchName);
     }
 
+    public function testVisionBoosterOptions(): void
+    {
+        $dn = $this->client([self::json(200, ['model' => 'm', 'answers' => ['q' => ['type' => 'truth', 'truth' => 0.5]]])]);
+        $dn->decide(questions: ['q' => truth('?')], boosters: [
+            Booster::depth(16),
+            Booster::segment('landing pad'),
+            Booster::segment(['gate', 'doorway'], maxInstances: 4, minScore: 0.1, polygonPoints: 8, depth: false),
+        ]);
+        self::assertStringEndsWith(',"boosters":[{"name":"bynn_depth","options":{"grid_size":16}},{"name":"bynn_segment","options":{"prompt":"landing pad"}},'
+            . '{"name":"bynn_segment","options":{"prompt":["gate","doorway"],"max_instances":4,"min_score":0.1,"polygon_points":8,"depth":false}}]}', (string) $this->sent()->getBody());
+    }
+
+    public function testDepthReading(): void
+    {
+        $grid = ['grid_rows' => 2, 'grid_cols' => 2, 'grid' => [[10.1, 10.2], [2.05, 3.5]], 'depth_min' => 1.01, 'depth_max' => 14.98, 'depth_median' => 4.37, 'width' => 810, 'height' => 1080];
+        $d = $this->client([self::json(200, [
+            'model' => 'm', 'answers' => [],
+            'evidence' => ['bynn_depth' => ['version' => 'bynn_depth-v1', 'status' => 'ok', 'results' => [
+                ['image' => 'cam', 'ahead' => 3.21, 'directions' => [5.12, 4.03, null, 2.81, 6.02, 7.15, 9.33], 'ground' => true] + $grid,
+                ['image' => 'sky', 'ahead' => null, 'directions' => [null, null, null, null, null, null, null], 'ground' => false] + $grid,
+                ['image' => 'bad', 'readable' => false],
+                ['image' => 'old', 'directions' => [], 'ground' => true] + $grid,
+                ['image' => 'cell', 'ahead' => 1, 'directions' => [], 'ground' => true, 'grid' => [['x']]] + $grid,
+            ]]],
+        ])])->decide(questions: ['q' => truth('?')]);
+        self::assertNotNull($d->evidence);
+        [$cam, $sky, $bad, $old, $cell] = $d->evidence['bynn_depth']->results;
+        self::assertInstanceOf(\Bynn\DecisionNode\DepthReading::class, $cam);
+        self::assertSame([3.21, null, 2.81, true, 2.05, 4.37, 810], [$cam->ahead, $cam->directions[2], $cam->directions[3], $cam->ground, $cam->grid[1][0], $cam->depthMedian, $cam->width]);
+        self::assertInstanceOf(\Bynn\DecisionNode\DepthReading::class, $sky);
+        self::assertSame([null, false], [$sky->ahead, $sky->ground]);
+        self::assertInstanceOf(UnknownReading::class, $bad);
+        self::assertInstanceOf(UnknownReading::class, $old);
+        self::assertInstanceOf(UnknownReading::class, $cell);
+    }
+
+    public function testSegmentReading(): void
+    {
+        $gate = ['label' => 'gate', 'score' => 0.91, 'box' => [0.31, 0.22, 0.58, 0.81], 'polygon' => [[0.31, 0.22], [0.58, 0.22], [0.58, 0.81]], 'area' => 0.12, 'centroid' => [0.45, 0.47],
+            'opening' => ['polygon' => [[0.4, 0.3], [0.5, 0.3], [0.5, 0.5]], 'centroid' => [0.44, 0.38], 'width' => 0.1, 'height' => 0.2, 'offset' => [-0.06, -0.12], 'area' => 0.02],
+            'depth' => ['median' => 4.2, 'opening_median' => 11.3, 'opening_rim_median' => null], 'size_m' => ['width' => 1.6, 'height' => 2.1, 'opening' => ['width' => 1.4, 'height' => 1.4]]];
+        $pad = ['label' => 'landing pad', 'score' => 0.3, 'box' => [0.1, 0.1, 0.2, 0.2], 'polygon' => [[0.1, 0.1], [0.2, 0.1], [0.2, 0.2]], 'area' => 0.01, 'centroid' => [0.15, 0.15],
+            'opening' => null, 'depth' => null, 'size_m' => null];
+        $d = $this->client([self::json(200, [
+            'model' => 'm', 'answers' => [],
+            'evidence' => ['bynn_segment' => ['version' => 'bynn_segment-v1', 'status' => 'ok', 'results' => [
+                ['image' => 'cam', 'width' => 1280, 'height' => 720, 'prompts' => ['gate', 'landing pad'], 'instances' => [$gate, $pad], 'depth_source' => 'bynn_depth', 'assumed_hfov_deg' => 65],
+                ['image' => 'empty', 'width' => 10, 'height' => 10, 'prompts' => ['gate'], 'instances' => [], 'depth_source' => null, 'assumed_hfov_deg' => 65],
+                ['image' => 'bad', 'readable' => false],
+                ['image' => 'box', 'width' => 10, 'height' => 10, 'prompts' => ['gate'], 'instances' => [['box' => [0.1, 0.1]] + $pad], 'depth_source' => null, 'assumed_hfov_deg' => 65],
+            ]]],
+        ])])->decide(questions: ['q' => truth('?')]);
+        self::assertNotNull($d->evidence);
+        [$cam, $empty, $bad, $box] = $d->evidence['bynn_segment']->results;
+        self::assertInstanceOf(\Bynn\DecisionNode\SegmentReading::class, $cam);
+        self::assertSame([1280, ['gate', 'landing pad'], 'bynn_depth', 65, 2], [$cam->width, $cam->prompts, $cam->depthSource, $cam->assumedHfovDeg, count($cam->instances)]);
+        self::assertSame($gate, $cam->instances[0]);
+        self::assertInstanceOf(\Bynn\DecisionNode\SegmentReading::class, $empty);
+        self::assertSame([[], null], [$empty->instances, $empty->depthSource]);
+        self::assertInstanceOf(UnknownReading::class, $bad);
+        self::assertInstanceOf(UnknownReading::class, $box);
+    }
+
     public function testOcrReading(): void
     {
         $d = $this->client([self::json(200, [

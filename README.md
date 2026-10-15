@@ -286,6 +286,11 @@ A booster is a specialist model that reads the request's images before the decis
 |---|---|---|
 | `age` (`Booster::AGE`) | A picture of a person; the largest face is read | `AgeReading`: `image`, `faces`, and `ageYears`, `low`, `high` (the range, in years) and `confidence`, each `null` when `faces` is 0 |
 | `ai_generated` (`Booster::AI_GENERATED`) | Any picture | `AiGeneratedReading`: `image`, `generated` (the probability that an image generator made it), `confidence`, `method` (`inference`, read from the pixels, or `c2pa`, the file's Content Credentials say so), `topGenerator` (`['name' => ..., 'probability' => ...]`, `null` unless the picture reads as likely generated, and on every `c2pa` reading), `c2paSigner` (who signed the file's Content Credentials, `null` unless they are trusted) and `c2pa` (`untrusted` when the file carries Content Credentials that are not trusted, else `null`) |
+| `face_detection` (`Booster::FACE_DETECTION`) | Any picture | `FaceDetectionReading`: `image`, `faces` (how many it found) and `detections`, each face's `box` and `confidence` (at most 64, so `faces` can be larger) |
+| `face_recognition` (`Booster::FACE_RECOGNITION`) | Any picture, searched against a collection: `Booster::faceRecognition($collection, $threshold)`, see [Collections](#collections) | `FaceRecognitionReading`: `image`, `collectionName`, `faces` (how many it searched) and `matches` by score, each `box`, `score`, `collection`, `reference`, `name` (a public figure's) or `label`, `collection_name` and the item's `metadata` |
+| `ocr` (`Booster::OCR`) | Any picture; `Booster::ocr($prompt)` asks for something specific | `OcrReading`: `image`, `text` (the text, or the answer to the prompt) and `truncated` |
+| `bynn_depth` (`Booster::DEPTH`), Depth Vision | Any picture; `Booster::depth($gridSize)` sets the grid, 2 to 16 cells a side (8) | `DepthReading`, in meters: `image`, `ahead` (the nearest obstacle straight ahead, the floor left out; `null` when none is found), `directions` (the same in 7 strips from left to right, each `null` when none), `ground` (a floor was found and left out), `gridRows`, `gridCols` and `grid` (row by row from the top left), `depthMin`, `depthMax`, `depthMedian`, and the picture's `width` and `height` in pixels. Estimates from one picture, for decisions and planning, never a safety stop |
+| `bynn_segment` (`Booster::SEGMENT`), Segment Vision | Any picture, with what to find: `Booster::segment($prompt)`, a phrase or 1 to 4 phrases of at most 120 characters, and `maxInstances` (1 to 16, 8), `minScore` (0 to 1, 0.25), `polygonPoints` (3 to 64, 24) and `depth` (true) | `SegmentReading`: `image`, `width`, `height`, `prompts`, `instances` by score, each as sent (`label`, the phrase it matched, `score`, `box`, `polygon`, `area`, `centroid`, `opening`, the largest hole it encloses or `null`, and with depth on its `depth` and `size_m` in meters), `depthSource` and `assumedHfovDeg`. Coordinates are fractions of the picture from its top left; distances and sizes are estimates, never a safety stop |
 
 ```php
 use Bynn\DecisionNode\{AgeReading, AiGeneratedReading, Image};
@@ -317,7 +322,7 @@ $d->usage->boosterTokens;  // the readings' share of the input tokens
 $d->usage->boosters;       // the booster calls billed
 ```
 
-`$boosters` takes up to 4 boosters, each at most once, in the order you give, usually by name (`Booster::AGE` and `Booster::AI_GENERATED` name the two). Names are plain strings, so a booster added to the API later works with this version too. A booster that needs a setting is a `Booster`:
+`$boosters` takes up to 4 boosters, each at most once, in the order you give, usually by name (each booster in the table above has its constant, such as `Booster::AGE`). Names are plain strings, so a booster added to the API later works with this version too. A booster that needs a setting is a `Booster`:
 
 ```php
 use Bynn\DecisionNode\Booster;
@@ -327,12 +332,27 @@ $boosters = ['age', new Booster('ai_generated', images: ['listing'], require: tr
 
 It is sent as `{"name": "ai_generated", "images": ["listing"], "require": true}`, and a booster in that wire form (`['name' => 'age', 'require' => true]`) is accepted too. A `Booster` with no option set is sent as the bare name.
 
+```php
+$d = $dn->decide(
+    questions: ['pad_ahead' => truth('Is there a landing pad in front of the drone?')],
+    images: [Image::fromUrl('front', 'https://files.example.com/drone/7/front.jpg')],
+    boosters: [Booster::depth(8), Booster::segment('landing pad')],
+);
+foreach ($d->evidence['bynn_segment']->results as $r) {
+    if ($r instanceof \Bynn\DecisionNode\SegmentReading) {
+        foreach ($r->instances as $m) {
+            echo $m['label'], ' ', $m['score'], ' ', implode(',', $m['centroid']), "\n";
+        }
+    }
+}
+```
+
 | `new Booster(...)` argument | Sends |
 |---|---|
 | `name` | The booster's name. |
 | `images` | The ids of the request's images the booster reads. Left out: every image of the request. |
 | `require` | `true`: a booster that fails or does not answer in time fails the request with a 529 `OverloadedError` whose `errorType` is `booster_unavailable`, retried like any 529. Left out or `false`: the decision runs without that reading, and its evidence says why. |
-| `options` | The booster's settings. Neither booster has any today. |
+| `options` | The booster's settings: `ocr`'s `prompt`, `face_recognition`'s `collection` and `threshold`, `bynn_depth`'s `grid_size`, and `bynn_segment`'s `prompt`, `max_instances`, `min_score`, `polygon_points` and `depth`. `Booster::ocr()`, `Booster::faceRecognition()`, `Booster::depth()` and `Booster::segment()` set them. |
 
 `$d->evidence` holds one `Evidence` per booster the request named, by name, in the request's order: `version` (the booster's version, such as `age-v3`), `status` (`ok`; `timeout`, no answer in its time; `error`; `skipped`, none of the request's images is one it reads), `latencyMs`, `billedCalls` (the calls of that booster billed on this request) and `results`, one reading per picture the booster was to read. A reading of a booster this version does not know, or one with a field missing or of the wrong type, is an `UnknownReading` whose `raw` holds its fields; the decision does not fail. So is a picture the booster did not read (it timed out or failed: `['image' => 'selfie']`, `status` says why) or could not decode (`['image' => 'selfie', 'readable' => false]`); neither is billed. Fields a reading adds that this version does not know are ignored. Without boosters, `evidence` and both usage fields are `null`.
 

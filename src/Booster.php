@@ -36,6 +36,21 @@ final class Booster implements \JsonSerializable
     /** Reads the text in a picture, or answers a prompt about it. */
     public const OCR = 'ocr';
 
+    /**
+     * Depth Vision: the distance in meters to what is in a picture, the
+     * nearest obstacle straight ahead, seven directions from left to right,
+     * and a grid. Estimates from one picture, for decisions and planning,
+     * never a safety stop.
+     */
+    public const DEPTH = 'bynn_depth';
+
+    /**
+     * Segment Vision: finds what a prompt names in a picture, each match's
+     * outline, box and centre, and with depth on its distance and size in
+     * meters. It needs a prompt: see {@see Booster::segment()}.
+     */
+    public const SEGMENT = 'bynn_segment';
+
     /** @var list<string>|null */
     public readonly ?array $images;
 
@@ -94,6 +109,46 @@ final class Booster implements \JsonSerializable
         }
 
         return new self(self::FACE_RECOGNITION, $images, $require, $options);
+    }
+
+    /**
+     * Depth Vision with its grid of `$gridSize` by `$gridSize` cells, 2 to
+     * 16 (the server's default is 8). Sent as given: the API checks it.
+     *
+     * @param iterable<string>|null $images
+     */
+    public static function depth(int $gridSize, ?iterable $images = null, ?bool $require = null): self
+    {
+        return new self(self::DEPTH, $images, $require, ['grid_size' => $gridSize]);
+    }
+
+    /**
+     * Segment Vision with what to find: a phrase, or a list of 1 to 4
+     * phrases of at most 120 characters each, sent as given. `$maxInstances`
+     * (1 to 16, default 8), `$minScore` (0 to 1, default 0.25),
+     * `$polygonPoints` (3 to 64, default 24) and `$depth` (default true)
+     * are sent only when given. The API checks every value.
+     *
+     * @param string|list<string>   $prompt
+     * @param iterable<string>|null $images
+     */
+    public static function segment(
+        string|array $prompt,
+        ?int $maxInstances = null,
+        int|float|null $minScore = null,
+        ?int $polygonPoints = null,
+        ?bool $depth = null,
+        ?iterable $images = null,
+        ?bool $require = null,
+    ): self {
+        $options = ['prompt' => $prompt];
+        foreach (['max_instances' => $maxInstances, 'min_score' => $minScore, 'polygon_points' => $polygonPoints, 'depth' => $depth] as $key => $value) {
+            if ($value !== null) {
+                $options[$key] = $value;
+            }
+        }
+
+        return new self(self::SEGMENT, $images, $require, $options);
     }
 
     /**
