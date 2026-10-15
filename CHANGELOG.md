@@ -45,7 +45,7 @@ Implements version 1.3 of the DecisionNode SDK specification (`SPEC_VERSION` `"1
 - The default model is `decisionnode-moe` (it was `decisionnode-latest`), the family id that always means the current release; `decisionnode-flash` is the fast one. A pinned id is `decisionnode-<family>-<version>`, read from the model list, and an answer names the pinned id that answered. The earlier ids stay accepted by the API.
 - The booster errors map to the existing classes: `booster_unknown` and `booster_input_mismatch` are a `BadRequestError`, `booster_not_enabled` a `PermissionDeniedError`, and `booster_unavailable` an `OverloadedError`, retried like any 529.
 - A 429 `key_spend_cap_reached`, a key's daily spend cap, is never retried: it holds until 00:00 UTC.
-- The conformance tests run suite 1.21.
+- The conformance tests run suite 1.22.
 
 ## [0.2.0] - Unreleased
 
