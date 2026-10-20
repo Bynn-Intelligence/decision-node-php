@@ -8,7 +8,8 @@ namespace Bynn\DecisionNode;
  * One page of `collections->listItems()`, newest first. `nextOffset` is the
  * offset of the next page, or null on the last page. `totalCapped` is true
  * when `total` stopped counting at the server's cap; `reference` and
- * `referencePrefix` are the page's lookup as sent, null when none.
+ * `referencePrefix` are the page's lookup as sent, null when none; `q` and
+ * `sort` a knowledge base's search and order as sent, null when none.
  */
 final class CollectionItemPage
 {
@@ -26,6 +27,8 @@ final class CollectionItemPage
         public readonly bool $totalCapped = false,
         public readonly ?string $reference = null,
         public readonly ?string $referencePrefix = null,
+        public readonly ?string $q = null,
+        public readonly ?string $sort = null,
     ) {
     }
 
@@ -47,6 +50,6 @@ final class CollectionItemPage
         $string = static fn (string $key): ?string => is_string($raw[$key] ?? null) ? $raw[$key] : null;
 
         return new self($items, $int('offset'), $int('limit'), $int('total'), $int('next_offset'), $raw,
-            ($raw['total_capped'] ?? false) === true, $string('reference'), $string('reference_prefix'));
+            ($raw['total_capped'] ?? false) === true, $string('reference'), $string('reference_prefix'), $string('q'), $string('sort'));
     }
 }

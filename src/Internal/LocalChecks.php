@@ -315,6 +315,25 @@ final class LocalChecks
         }
     }
 
+    /** A knowledge base's item list orders. */
+    public const ITEM_SORTS = ['newest', 'oldest', 'title'];
+
+    /**
+     * The items list's search and order, checked after the lookup: `q` 1
+     * to 200 characters, `sort` newest, oldest or title.
+     *
+     * @throws BadRequestError
+     */
+    public static function itemListQuery(?string $q, ?string $sort): void
+    {
+        if ($q !== null && ($q === '' || mb_strlen($q, 'UTF-8') > 200)) {
+            throw self::bad('Query parameter q must be 1 to 200 characters.');
+        }
+        if ($sort !== null && !in_array($sort, self::ITEM_SORTS, true)) {
+            throw self::bad(sprintf('Query parameter sort must be newest, oldest or title, got %s.', self::printable($sort, 16)));
+        }
+    }
+
     /** The usage reads' `granularity` values. */
     public const USAGE_GRANULARITIES = ['none', 'hour', 'day', 'month'];
     /** The usage reads' `group_by` values. */

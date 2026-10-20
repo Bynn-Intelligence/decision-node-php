@@ -1625,7 +1625,9 @@ final class Suite
                     'next_offset' => $result->nextOffset,
                     'reference' => $result->reference,
                     'reference_prefix' => $result->referencePrefix,
-                ];
+                    'q' => $result->q,
+                    'sort' => $result->sort,
+                ] + $result->raw;
                 break;
             default:
                 if ($result instanceof \Bynn\DecisionNode\ItemsDeleted) {

@@ -324,21 +324,26 @@ final class Collections
      * other, each 1 to 64 of `[A-Za-z0-9_.:-]`. A public collection's items
      * are not listed: a PermissionDeniedError (`collection_read_only`).
      *
+     * A knowledge base's documents also take `q`, 1 to 200 characters that
+     * a document's title or reference contains, and `sort`, `newest` (the
+     * default), `oldest` or `title`; each sent only when given.
+     *
      * @throws BadRequestError for a query out of bounds, before anything is sent
      */
-    public function listItems(string $collectionId, ?int $offset = null, ?int $limit = null, ?string $reference = null, ?string $referencePrefix = null): CollectionItemPage
+    public function listItems(string $collectionId, ?int $offset = null, ?int $limit = null, ?string $reference = null, ?string $referencePrefix = null, ?string $q = null, ?string $sort = null): CollectionItemPage
     {
-        return $this->listItemsAsync($collectionId, $offset, $limit, $reference, $referencePrefix)->wait();
+        return $this->listItemsAsync($collectionId, $offset, $limit, $reference, $referencePrefix, $q, $sort)->wait();
     }
 
     /**
      * @return PromiseInterface resolves with a CollectionItemPage
      */
-    public function listItemsAsync(string $collectionId, ?int $offset = null, ?int $limit = null, ?string $reference = null, ?string $referencePrefix = null): PromiseInterface
+    public function listItemsAsync(string $collectionId, ?int $offset = null, ?int $limit = null, ?string $reference = null, ?string $referencePrefix = null, ?string $q = null, ?string $sort = null): PromiseInterface
     {
         LocalChecks::listQuery($offset, $limit);
         LocalChecks::referenceQuery($reference, $referencePrefix);
-        $params = array_filter(['offset' => $offset, 'limit' => $limit, 'reference' => $reference, 'reference_prefix' => $referencePrefix], static fn (int|string|null $v): bool => $v !== null);
+        LocalChecks::itemListQuery($q, $sort);
+        $params = array_filter(['offset' => $offset, 'limit' => $limit, 'reference' => $reference, 'reference_prefix' => $referencePrefix, 'q' => $q, 'sort' => $sort], static fn (int|string|null $v): bool => $v !== null);
         $query = http_build_query($params, '', '&', PHP_QUERY_RFC3986);
 
         return $this->request('GET', self::path($collectionId) . '/items' . ($query !== '' ? '?' . $query : ''))->then(

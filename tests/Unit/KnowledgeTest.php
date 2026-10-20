@@ -336,6 +336,23 @@ final class KnowledgeTest extends TestCase
         }
     }
 
+    public function testListItemsSearchAndOrder(): void
+    {
+        $dn = $this->client([self::json(200, ['items' => [], 'offset' => 0, 'limit' => 20, 'total' => 0, 'next_offset' => null, 'q' => 'claims policy', 'sort' => 'title'])]);
+        $page = $dn->collections->listItems(self::COL, q: 'claims policy', sort: 'title');
+        self::assertSame(['q=claims%20policy&sort=title', 'claims policy', 'title'], [$this->sent()->getUri()->getQuery(), $page->q, $page->sort]);
+        foreach ([['', null, 'Query parameter q must be 1 to 200 characters.'], [str_repeat('é', 201), null, 'Query parameter q must be 1 to 200 characters.'],
+            [null, "big\u{7}first-by-size", 'Query parameter sort must be newest, oldest or title, got big\\u{7}first-by-siz....']] as [$q, $sort, $message]) {
+            try {
+                $dn->collections->listItems(self::COL, q: $q, sort: $sort);
+                self::fail('expected a BadRequestError');
+            } catch (BadRequestError $e) {
+                self::assertSame($message, $e->getMessage());
+            }
+        }
+        self::assertCount(1, $this->history);
+    }
+
     public function testDeleteFailed(): void
     {
         $dn = $this->client([self::json(200, ['deleted' => 3])]);
