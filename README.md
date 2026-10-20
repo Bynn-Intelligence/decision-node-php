@@ -422,7 +422,7 @@ Ingestion is asynchronous: a document comes back `queued`, then is `processing` 
 | `updateItem($collectionId, $itemId, reference:, label:, metadata:, pinned:, pinRank:, title:)` | Changes only what you give, at once and free; a new title makes a new version |
 | `getItem($collectionId, $itemId, includeText: true)` | One document; with `includeText` its stored text in `text` |
 | `listItems($collectionId, ...)`, `listChunks($collectionId, $itemId, offset:, limit:)` | The documents, and one document's chunks (`chunk`, `heading`, `byteStart`, `byteEnd`, `pageStart`, `pageEnd`, `tokens`, `text`) |
-| `deleteFailedItems($collectionId)` | Deletes every failed document at once (a failed document stays listed with its reason until deleted, counting toward nothing) and answers how many: `deleted` |
+| `deleteFailed($collectionId)` | Deletes every failed document at once (a failed document stays listed with its reason until deleted, counting toward nothing) and answers how many: `deleted` |
 | `deleteItem($collectionId, $itemId)`, `delete($collectionId)` | Deletes a document with its text and chunks, or the whole knowledge base (`deleted` true, or `status` `purging` while the purge finishes in the background) |
 | `search($collectionId, $query, scope:, match:, filter:, topK:, pinned:, maxTokens:)` | The passages a query finds, without a decision |
 
@@ -781,7 +781,7 @@ composer test          # unit tests
 composer analyse       # static analysis
 ```
 
-The conformance tests run the language-neutral DecisionNode conformance cases (suite 1.11) against their mock server, every case once through the blocking methods and once through their `Async` forms (sessions are blocking in both runs): set `DECISIONNODE_CONFORMANCE_DIR` to the suite's directory and run `composer conformance`. Without that variable the conformance tests fail; they never skip. CI checks the suite out at a pinned commit, set once as `CONFORMANCE_REF` in `.github/workflows/ci.yml`, and every action in the workflow is pinned to a commit SHA.
+The conformance tests run the language-neutral DecisionNode conformance cases (suite 1.23) against their mock server, every case once through the blocking methods and once through their `Async` forms (sessions are blocking in both runs): set `DECISIONNODE_CONFORMANCE_DIR` to the suite's directory and run `composer conformance`. Without that variable the conformance tests fail; they never skip. CI checks the suite out at a pinned commit, set once as `CONFORMANCE_REF` in `.github/workflows/ci.yml`, and every action in the workflow is pinned to a commit SHA.
 
 ## License
 

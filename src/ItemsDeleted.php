@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Bynn\DecisionNode;
 
 /**
- * The answer to `collections->deleteFailedItems()`: how many failed
+ * The answer to `collections->deleteFailed()`: how many failed
  * documents were `deleted` (null when the API sent no count).
  */
 final class ItemsDeleted

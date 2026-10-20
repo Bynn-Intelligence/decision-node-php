@@ -621,6 +621,9 @@ final class Suite
         if (isset($exp->same_header)) {
             self::checkSameHeader($exp->same_header, $log);
         }
+        if (isset($exp->distinct_header)) {
+            self::checkDistinctHeader($exp->distinct_header, $log);
+        }
         if (isset($exp->session_events)) {
             self::checkEvents($exp->session_events, $events);
         }
@@ -849,6 +852,32 @@ final class Suite
         }
         if (isset($spec->pattern) && !self::matches($spec->pattern, $values[0])) {
             throw new Fail(sprintf('same_header %s: %s does not match %s', $name, $values[0], $spec->pattern));
+        }
+    }
+
+    /**
+     * Exactly `count` logged requests match path_suffix and method, each
+     * carrying the header with a value of its own: a call sent again with
+     * another body has a new Idempotency-Key.
+     *
+     * @param list<\stdClass> $log
+     */
+    private static function checkDistinctHeader(\stdClass $spec, array $log): void
+    {
+        $name = strtolower($spec->name);
+        $values = [];
+        foreach ($log as $r) {
+            if ((isset($spec->path_suffix) && !str_ends_with($r->path, $spec->path_suffix)) || (isset($spec->method) && $r->method !== $spec->method)) {
+                continue;
+            }
+            $headers = array_change_key_case(get_object_vars($r->headers), CASE_LOWER);
+            if (!isset($headers[$name])) {
+                throw new Fail(sprintf('distinct_header %s: a request of %s %s carries none', $name, $r->method, $r->path));
+            }
+            $values[] = $headers[$name];
+        }
+        if (count($values) !== $spec->count || count(array_unique($values)) !== count($values)) {
+            throw new Fail(sprintf('distinct_header %s: expected %d distinct values, got %s', $name, $spec->count, json_encode($values)));
         }
     }
 
@@ -1865,6 +1894,7 @@ final class Suite
                     Compare::match($spec->knowledge ?? new \stdClass(), self::knowledge($result, $path . '.knowledge'), $path . '.knowledge');
                     break;
                 case 'chunk_page':
+                case 'collection':
                 case 'collections':
                 case 'item':
                 case 'item_page':

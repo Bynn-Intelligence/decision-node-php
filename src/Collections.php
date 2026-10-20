@@ -494,15 +494,15 @@ final class Collections
      * A failed document stays listed with its reason until it is deleted,
      * counting toward nothing.
      */
-    public function deleteFailedItems(string $collectionId): ItemsDeleted
+    public function deleteFailed(string $collectionId): ItemsDeleted
     {
-        return $this->deleteFailedItemsAsync($collectionId)->wait();
+        return $this->deleteFailedAsync($collectionId)->wait();
     }
 
     /**
      * @return PromiseInterface resolves with an ItemsDeleted
      */
-    public function deleteFailedItemsAsync(string $collectionId): PromiseInterface
+    public function deleteFailedAsync(string $collectionId): PromiseInterface
     {
         return $this->request('DELETE', self::path($collectionId) . '/items?status=failed')->then(
             static fn (array $body): ItemsDeleted => ItemsDeleted::fromArray($body),

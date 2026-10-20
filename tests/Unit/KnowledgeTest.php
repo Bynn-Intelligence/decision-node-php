@@ -335,7 +335,7 @@ final class KnowledgeTest extends TestCase
     public function testDeleteFailedItems(): void
     {
         $dn = $this->client([self::json(200, ['deleted' => 3])]);
-        $done = $dn->collections->deleteFailedItems(self::COL);
+        $done = $dn->collections->deleteFailed(self::COL);
         self::assertSame(['DELETE', self::ITEMS, 'status=failed', 3], [$this->sent()->getMethod(), $this->sent()->getUri()->getPath(), $this->sent()->getUri()->getQuery(), $done->deleted]);
     }
 
@@ -499,11 +499,16 @@ final class KnowledgeTest extends TestCase
         };
         self::assertSame('files[0].byte_size: 52428801 is over the limit of 52428800 bytes.',
             $bad(static fn () => $dn->collections->addDocument(self::COL, Document::fromData(self::pdf(52_428_801)), title: 'T')));
-        self::assertSame('files[0].byte_size: must be at least 1.', $bad(static fn () => $dn->collections->addDocument(self::COL, Document::fromData('', 'application/pdf'), title: 'T')));
-        self::assertStringStartsWith('files[0].content_type: must be one of text/plain, text/markdown, application/pdf, ',
-            $bad(static fn () => $dn->collections->addDocument(self::COL, Document::fromData('PK..'), title: 'T')));
-        $bad(static fn () => $dn->collections->addDocument(self::COL, Document::fromData('x', 'application/zip'), title: 'T'));
-        $bad(static fn () => $dn->collections->addDocument(self::COL, Document::fromData('x', filename: 'a.zip'), title: 'T'));
+        self::assertSame('files[0].byte_size: must be an integer from 1 to 52428800.', $bad(static fn () => $dn->collections->addDocument(self::COL, Document::fromData('', 'application/pdf'), title: 'T')));
+        self::assertStringEndsWith(', image/webp, got application/zip.',
+            $bad(static fn () => $dn->collections->addDocument(self::COL, Document::fromData('x', 'application/zip'), title: 'T')));
+        foreach ([Document::fromData('PK..'), Document::fromData('x', filename: 'a.zip')] as $untold) {
+            try {
+                $dn->collections->addDocument(self::COL, $untold, title: 'T');
+                self::fail('expected an argument error');
+            } catch (\InvalidArgumentException) {
+            }
+        }
         self::assertCount(0, $this->history);
     }
 

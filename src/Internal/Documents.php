@@ -143,7 +143,7 @@ final class Documents
         }
         $size = strlen($bytes);
         if ($size === 0) {
-            throw self::bad(sprintf('files[%d].byte_size: must be at least 1.', $index));
+            throw self::bad(sprintf('files[%d].byte_size: must be an integer from 1 to %d.', $index, Document::MAX_FILE_BYTES));
         }
         if ($size > Document::MAX_FILE_BYTES) {
             throw self::tooLarge($index, $size);
@@ -300,12 +300,13 @@ final class Documents
      * The type given, else the file name's extension's, else the one the
      * first bytes show.
      *
-     * @throws BadRequestError when none is a knowledge type
+     * @throws BadRequestError when it is not a knowledge type
+     * @throws \InvalidArgumentException when it cannot be told
      */
     private static function contentType(Document $document, string $bytes, int $index): string
     {
         if ($document->contentType !== null) {
-            $type = strtolower(trim($document->contentType));
+            $type = $document->contentType;
         } else {
             $type = null;
             if ($document->filename !== null) {
@@ -314,8 +315,11 @@ final class Documents
             }
             $type ??= self::sniff($bytes);
         }
-        if ($type === null || !in_array($type, Document::CONTENT_TYPES, true)) {
-            throw self::bad(sprintf('files[%d].content_type: must be one of %s.', $index, implode(', ', Document::CONTENT_TYPES)));
+        if ($type === null) {
+            throw new \InvalidArgumentException(sprintf('Document %d: its type cannot be told from its name or its first bytes: give a content type or a file name.', $index));
+        }
+        if (!in_array($type, Document::CONTENT_TYPES, true)) {
+            throw self::bad(sprintf('files[%d].content_type: must be one of %s, got %s.', $index, implode(', ', Document::CONTENT_TYPES), $type));
         }
 
         return $type;
