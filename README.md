@@ -781,7 +781,7 @@ composer test          # unit tests
 composer analyse       # static analysis
 ```
 
-The conformance tests run the language-neutral DecisionNode conformance cases (suite 1.23) against their mock server, every case once through the blocking methods and once through their `Async` forms (sessions are blocking in both runs): set `DECISIONNODE_CONFORMANCE_DIR` to the suite's directory and run `composer conformance`. Without that variable the conformance tests fail; they never skip. CI checks the suite out at a pinned commit, set once as `CONFORMANCE_REF` in `.github/workflows/ci.yml`, and every action in the workflow is pinned to a commit SHA.
+The conformance tests run the language-neutral DecisionNode conformance cases (suite 1.24) against their mock server, every case once through the blocking methods and once through their `Async` forms (sessions are blocking in both runs): set `DECISIONNODE_CONFORMANCE_DIR` to the suite's directory and run `composer conformance`. Without that variable the conformance tests fail; they never skip. CI checks the suite out at a pinned commit, set once as `CONFORMANCE_REF` in `.github/workflows/ci.yml`, and every action in the workflow is pinned to a commit SHA.
 
 ## License
 

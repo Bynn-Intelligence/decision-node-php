@@ -1628,6 +1628,10 @@ final class Suite
                 ];
                 break;
             default:
+                if ($result instanceof \Bynn\DecisionNode\ItemsDeleted) {
+                    $got = ['deleted' => $result->deleted] + $result->raw;
+                    break;
+                }
                 if (!$result instanceof Deleted) {
                     throw new Fail($path . ': expected a Deleted, got ' . self::describe($result));
                 }

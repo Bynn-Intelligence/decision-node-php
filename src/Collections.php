@@ -564,7 +564,8 @@ final class Collections
      *
      * The first read is made at once; then it waits `$pollInterval` seconds
      * (at least 0.1), half as long again after each read up to 10 s; each
-     * read is retried as any call, after the server's Retry-After.
+     * read is retried as any call, after the server's Retry-After. The
+     * timeout is a deadline on the clock, counted from the call.
      *
      * @throws \InvalidArgumentException for a poll interval under 0.1 s or a timeout not above 0, before anything is sent
      * @throws TimeoutError when it has not ended within `$timeout` seconds
@@ -586,19 +587,19 @@ final class Collections
             throw new \InvalidArgumentException(sprintf('timeout must be a number of seconds above 0, got %s.', var_export($timeout, true)));
         }
 
-        return $this->pollReady($collectionId, $itemId, $timeout, $pollInterval, microtime(true), 0.0, null);
+        return $this->pollReady($collectionId, $itemId, microtime(true) + $timeout, $timeout, $pollInterval, null);
     }
 
     /**
      * One read, then another after the interval until the document or the
      * knowledge base has settled.
      */
-    private function pollReady(string $collectionId, ?string $itemId, float $timeout, float $interval, float $started, float $waited, ?float $delay): PromiseInterface
+    private function pollReady(string $collectionId, ?string $itemId, float $deadline, float $timeout, float $interval, ?float $delay): PromiseInterface
     {
         $path = $itemId === null ? self::path($collectionId) : self::itemPath($collectionId, $itemId);
 
         return $this->api->request('GET', $path, delay: $delay)->then(
-            function (array $result) use ($collectionId, $itemId, $timeout, $interval, $started, $waited): mixed {
+            function (array $result) use ($collectionId, $itemId, $deadline, $timeout, $interval): mixed {
                 $body = self::object($result);
                 if ($itemId !== null) {
                     $item = CollectionItem::fromArray($body);
@@ -612,8 +613,8 @@ final class Collections
                         return $collection;
                     }
                 }
-                $spent = max($waited, microtime(true) - $started);
-                if ($spent >= $timeout) {
+                $left = $deadline - microtime(true);
+                if ($left <= 0.0) {
                     throw new TimeoutError(sprintf(
                         '%s was not ready within %s s.',
                         $itemId === null ? 'The knowledge base ' . $collectionId : 'The document ' . $itemId,
@@ -621,9 +622,7 @@ final class Collections
                     ));
                 }
 
-                $wait = min($interval, $timeout - $spent);
-
-                return $this->pollReady($collectionId, $itemId, $timeout, min($interval * 1.5, self::MAX_READY_POLL_INTERVAL), $started, $waited + $wait, $wait);
+                return $this->pollReady($collectionId, $itemId, $deadline, $timeout, min($interval * 1.5, self::MAX_READY_POLL_INTERVAL), min($interval, $left));
             },
         );
     }

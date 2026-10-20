@@ -321,22 +321,27 @@ final class KnowledgeTest extends TestCase
         self::assertInstanceOf(Collection::class, $collection);
         self::assertSame('/v1/collections/' . self::COL, $this->sent(1)->getUri()->getPath());
 
-        $dn = $this->client(array_fill(0, 10, self::json(200, self::item('queued'))));
+        // The timeout is a deadline on the clock: the waits are slept here.
+        $handler = new \GuzzleHttp\Handler\MockHandler(array_fill(0, 20, self::json(200, self::item('queued'))));
+        $dn = new \Bynn\DecisionNode\DecisionNode(apiKey: self::KEY, baseUrl: 'https://api.example.test',
+            httpClient: new \GuzzleHttp\Client(['handler' => \GuzzleHttp\HandlerStack::create($handler)]));
+        $started = microtime(true);
         try {
-            $dn->collections->waitUntilReady(self::COL, 'itm_1', timeout: 3.0);
+            $dn->collections->waitUntilReady(self::COL, 'itm_1', timeout: 0.35, pollInterval: 0.1);
             self::fail('expected a TimeoutError');
         } catch (TimeoutError) {
-            // Reads after 0, 1, 2.5 and 3 s: the last wait is what the timeout leaves.
-            self::assertCount(4, $this->history);
-            self::assertSame(500, $this->history[3]['options']['delay'] ?? null);
+            $took = microtime(true) - $started;
+            self::assertGreaterThanOrEqual(0.35, $took);
+            self::assertLessThan(1.0, $took);
         }
     }
 
-    public function testDeleteFailedItems(): void
+    public function testDeleteFailed(): void
     {
         $dn = $this->client([self::json(200, ['deleted' => 3])]);
         $done = $dn->collections->deleteFailed(self::COL);
-        self::assertSame(['DELETE', self::ITEMS, 'status=failed', 3], [$this->sent()->getMethod(), $this->sent()->getUri()->getPath(), $this->sent()->getUri()->getQuery(), $done->deleted]);
+        self::assertSame(['DELETE', self::ITEMS, 'status=failed', '', 3], [$this->sent()->getMethod(), $this->sent()->getUri()->getPath(),
+            $this->sent()->getUri()->getQuery(), $this->sent()->getHeaderLine('Idempotency-Key'), $done->deleted]);
     }
 
     public function testWaitUntilReadyArguments(): void
