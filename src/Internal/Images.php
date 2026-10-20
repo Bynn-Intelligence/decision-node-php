@@ -296,12 +296,13 @@ final class Images
     /**
      * The presign answer's uploads, checked: one per file, each with an id, a
      * storage URL that is https (http only on this machine) and its headers.
+     * Document uploads are read the same way.
      *
      * @param array<string, mixed> $result
      *
      * @return list<array{upload_id: string, url: string, headers: array<string, string>, expires_at: float|null}>
      */
-    private static function uploads(array $result, int $count): array
+    public static function uploads(array $result, int $count): array
     {
         $body = $result['body'];
         $list = is_array($body) && is_array($body['uploads'] ?? null) ? $body['uploads'] : null;
@@ -354,7 +355,7 @@ final class Images
         throw new DecisionNodeError(sprintf('The storage URL must be https, got "%s". Nothing was sent to it.', $url), errorType: 'upload_failed');
     }
 
-    private static function time(mixed $value): ?float
+    public static function time(mixed $value): ?float
     {
         if (!is_string($value) || $value === '') {
             return null;

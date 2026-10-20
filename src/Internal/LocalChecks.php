@@ -613,19 +613,109 @@ final class LocalChecks
     }
 
     /**
-     * `POST /v1/collections`: the type is `face`, the name 1 to 80
-     * characters. Both faults are reported together.
+     * `POST /v1/collections`: the type is `face` or `text`, the name 1 to 80
+     * characters, and a scope key, when given, 1 to 40 of `[a-z0-9_]`. The
+     * faults are reported together.
      *
      * @throws ValidationError
      */
-    public static function collection(mixed $type, mixed $name): void
+    public static function collection(mixed $type, mixed $name, ?string $scopeKey = null): void
     {
         $entries = [];
-        if ($type !== 'face') {
-            $entries[] = self::entry('literal_error', ['body', 'type'], "Input should be 'face'", self::echoed($type), ['expected' => "'face'"]);
+        if ($type !== 'face' && $type !== 'text') {
+            $entries[] = self::entry('literal_error', ['body', 'type'], "Input should be 'face' or 'text'", self::echoed($type), ['expected' => "'face' or 'text'"]);
         }
         array_push($entries, ...self::stringEntries(['body', 'name'], $name, self::MAX_COLLECTION_NAME_CHARS));
+        if ($scopeKey !== null && preg_match('/' . self::SCOPE_KEY_PATTERN . '/D', $scopeKey) !== 1) {
+            $entries[] = self::entry('string_pattern_mismatch', ['body', 'scope_key'], sprintf("String should match pattern '%s'", self::SCOPE_KEY_PATTERN), self::echoed($scopeKey));
+        }
         self::raise($entries, null);
+    }
+
+    /** A knowledge base's scope key. */
+    public const SCOPE_KEY_PATTERN = '^[a-z0-9_]{1,40}$';
+
+    /** A document's title, trimmed, in characters. */
+    public const MAX_TITLE_CHARS = 200;
+
+    public const MAX_PIN_RANK = 1000;
+
+    /**
+     * A document's item body (`POST` and `PUT` of a knowledge base's item):
+     * the title, an empty text and the format, then the reference, the pin
+     * rank, the label and the metadata, all reported together. `$title` is
+     * the title to send (the one given, or a file's stem), `$titleNeeded`
+     * whether the body must carry one; `$text` the text sent inline, or
+     * null for a document sent by upload id.
+     *
+     * @param array<array-key, mixed>|null $metadata
+     *
+     * @throws ValidationError
+     */
+    public static function document(?string $title, bool $titleNeeded, ?string $text, ?string $format, ?string $reference, ?int $pinRank, ?string $label, ?array $metadata): void
+    {
+        $entries = self::titleEntries($title, $titleNeeded);
+        if ($text === '') {
+            $entries[] = self::entry('string_too_short', ['body', 'text'], 'The text is empty', '');
+        }
+        if ($format !== null && $format !== 'markdown' && $format !== 'text') {
+            $entries[] = self::entry('literal_error', ['body', 'format'], "Input should be 'markdown' or 'text'", self::echoed($format));
+        }
+        array_push($entries, ...self::textFieldEntries($reference !== null, $reference, $pinRank, $label !== null, $label, $metadata !== null, $metadata));
+        self::raise($entries, null);
+    }
+
+    /**
+     * A title's 422 entry: missing where one is needed, or not 1 to 200
+     * characters once trimmed, counted in code points.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function titleEntries(?string $title, bool $needed): array
+    {
+        if ($title === null) {
+            return $needed ? [self::entry('missing', ['body', 'title'], 'Field required', null)] : [];
+        }
+        $chars = mb_strlen(self::trimmed($title), 'UTF-8');
+        if ($chars < 1 || $chars > self::MAX_TITLE_CHARS) {
+            return [self::entry('string_too_long', ['body', 'title'], sprintf('A title is 1 to %d characters', self::MAX_TITLE_CHARS), self::echoed($title))];
+        }
+
+        return [];
+    }
+
+    /**
+     * A text without the white space at its ends, as the API trims a title
+     * (Unicode white space; a text that is not UTF-8 as it is).
+     */
+    public static function trimmed(string $text): string
+    {
+        return preg_replace('/^[\s\p{Z}]+|[\s\p{Z}]+$/u', '', $text) ?? $text;
+    }
+
+    /**
+     * A knowledge base item's shared fields: the reference, the label and
+     * the metadata as an enrollment's, and the pin rank, 0 to 1,000.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function textFieldEntries(bool $hasReference, mixed $reference, ?int $pinRank, bool $hasLabel, mixed $label, bool $hasMetadata, mixed $metadata): array
+    {
+        $entries = [];
+        if ($hasReference) {
+            array_push($entries, ...self::stringEntries(['body', 'reference'], $reference, self::MAX_ITEM_REFERENCE_CHARS, self::ITEM_REFERENCE_PATTERN));
+        }
+        if ($pinRank !== null && ($pinRank < 0 || $pinRank > self::MAX_PIN_RANK)) {
+            $entries[] = self::entry('int_range', ['body', 'pin_rank'], sprintf('Input should be an integer from 0 to %d', self::MAX_PIN_RANK), $pinRank);
+        }
+        if ($hasLabel && $label !== null) {
+            array_push($entries, ...self::stringEntries(['body', 'label'], $label, self::MAX_ITEM_LABEL_CHARS));
+        }
+        if ($hasMetadata) {
+            array_push($entries, ...self::metadataEntries($metadata));
+        }
+
+        return $entries;
     }
 
     /**
@@ -663,12 +753,21 @@ final class LocalChecks
      * `PATCH /v1/collections/{id}/items/{item_id}`: at least one field, the
      * reference and the label checked as an enrollment's, a label given as
      * null clearing it, and the metadata. Each `$has...` says whether that
-     * field was given.
+     * field was given. A change of `pinned`, `pin_rank` or `title` is a
+     * knowledge base's: the pin rank 0 to 1,000 and the title 1 to 200
+     * characters are checked too.
      *
      * @throws ValidationError
      */
-    public static function itemUpdate(bool $hasReference, mixed $reference, bool $hasLabel, mixed $label, bool $hasMetadata, mixed $metadata): void
+    public static function itemUpdate(bool $hasReference, mixed $reference, bool $hasLabel, mixed $label, bool $hasMetadata, mixed $metadata, bool $hasPinned = false, ?int $pinRank = null, ?string $title = null): void
     {
+        if ($hasPinned || $pinRank !== null || $title !== null) {
+            $entries = self::textFieldEntries($hasReference, $reference, $pinRank, $hasLabel, $label, $hasMetadata, $metadata);
+            array_push($entries, ...self::titleEntries($title, false));
+            self::raise($entries, null);
+
+            return;
+        }
         $entries = [];
         if ($hasReference) {
             array_push($entries, ...self::stringEntries(['body', 'reference'], $reference, self::MAX_ITEM_REFERENCE_CHARS, self::ITEM_REFERENCE_PATTERN));

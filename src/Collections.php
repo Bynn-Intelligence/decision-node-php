@@ -7,28 +7,37 @@ namespace Bynn\DecisionNode;
 use Bynn\DecisionNode\Exception\BadRequestError;
 use Bynn\DecisionNode\Exception\DecisionNodeError;
 use Bynn\DecisionNode\Exception\ServerError;
+use Bynn\DecisionNode\Exception\TimeoutError;
 use Bynn\DecisionNode\Exception\ValidationError;
 use Bynn\DecisionNode\Internal\Api;
+use Bynn\DecisionNode\Internal\Documents;
 use Bynn\DecisionNode\Internal\Images;
 use Bynn\DecisionNode\Internal\Json;
 use Bynn\DecisionNode\Internal\LocalChecks;
+use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Promise\PromiseInterface;
 
 /**
  * The Collections API: the workspace's collections of faces, which the
- * `face_recognition` booster searches, and the public ones it may search.
- * Reach it as `$dn->collections`.
+ * `face_recognition` booster searches, and the public ones it may search;
+ * and its knowledge bases, collections of documents (type `text`), which
+ * the `knowledge` booster searches. Reach it as `$dn->collections`.
  *
  *     $staff = $dn->collections->create('Staff, Stockholm office');
  *     $dn->collections->enroll($staff->id, Image::fromPath('badge', 'emp-1042.jpg'), reference: 'emp-1042', label: 'Reception');
+ *
+ *     $kb = $dn->collections->create('Claims policy', type: 'text');
+ *     $doc = $dn->collections->addDocument($kb->id, Document::fromPath('claims-2026.pdf'));
+ *     $dn->collections->waitUntilReady($kb->id, $doc->id);
  *
  * Every result holds the object's fields as the API sent them and `raw`.
  * Create and enroll send an Idempotency-Key, a new UUID for each call and
  * the same on every attempt, so the server creates the collection or
  * enrolls and bills the face once however often the call is tried: they are
  * retried like every API call, and on a 409 idempotency_in_progress after
- * its wait. A 409 idempotency_key_reused is raised. The other calls carry
- * no key and are retried like every API call.
+ * its wait. A 409 idempotency_key_reused is raised. Adding, replacing and
+ * changing a document carry one too. The other calls carry no key and are
+ * retried like every API call.
  */
 final class Collections
 {
@@ -40,32 +49,62 @@ final class Collections
     /**
      * @internal
      */
+    /** Seconds per attempt of a document call with `wait`, when the client was given no timeout. */
+    public const WAIT_TIMEOUT = 20.0;
+
+    /** How long `waitUntilReady` waits by default, in seconds. */
+    public const DEFAULT_READY_TIMEOUT = 300.0;
+
+    /** `waitUntilReady`'s first interval between reads, in seconds. */
+    public const DEFAULT_READY_POLL_INTERVAL = 1.0;
+
+    /** The shortest poll interval `waitUntilReady` takes, in seconds. */
+    public const MIN_READY_POLL_INTERVAL = 0.1;
+
+    /** The longest interval `waitUntilReady` grows to, in seconds. */
+    private const MAX_READY_POLL_INTERVAL = 10.0;
+
+    /**
+     * @internal
+     *
+     * @param bool $timeoutSet whether the client was given a timeout, which then holds for a call with `wait` too
+     */
     public function __construct(
         private readonly Api $api,
         private readonly Images $images,
+        private readonly ?Documents $documents = null,
+        private readonly bool $timeoutSet = false,
     ) {
     }
 
     /**
-     * `POST /v1/collections`: a new collection. The type is `face`, the only
-     * one; the name 1 to 80 characters. A type or a name the API would
-     * refuse is refused before anything is sent, with its entries.
+     * `POST /v1/collections`: a new collection. The type is `face` (the
+     * default) or `text`, a knowledge base; the name 1 to 80 characters.
+     * `$scopeKey`, sent only when given and taken only with type `text`, is
+     * the metadata key (1 to 40 of `[a-z0-9_]`) whose value scopes a
+     * document to, say, one mission; it is fixed for the collection's life.
+     * A type, a name or a scope key the API would refuse is refused before
+     * anything is sent, with its entries.
      *
      * @throws ValidationError|DecisionNodeError
      */
-    public function create(string $name, string $type = 'face'): Collection
+    public function create(string $name, string $type = 'face', ?string $scopeKey = null): Collection
     {
-        return $this->createAsync($name, $type)->wait();
+        return $this->createAsync($name, $type, $scopeKey)->wait();
     }
 
     /**
      * @return PromiseInterface resolves with a Collection
      */
-    public function createAsync(string $name, string $type = 'face'): PromiseInterface
+    public function createAsync(string $name, string $type = 'face', ?string $scopeKey = null): PromiseInterface
     {
-        LocalChecks::collection($type, $name);
+        LocalChecks::collection($type, $name, $scopeKey);
+        $body = ['type' => $type, 'name' => $name];
+        if ($scopeKey !== null) {
+            $body['scope_key'] = $scopeKey;
+        }
 
-        return $this->request('POST', '/v1/collections', Json::encode(['type' => $type, 'name' => $name]), Api::RETRY_IDEMPOTENT, Api::idempotencyKey())->then(
+        return $this->request('POST', '/v1/collections', Json::encode($body), Api::RETRY_IDEMPOTENT, Api::idempotencyKey())->then(
             static fn (array $body): Collection => Collection::fromArray($body),
         );
     }
@@ -124,8 +163,11 @@ final class Collections
 
     /**
      * `DELETE /v1/collections/{id}`: deletes the collection and every item
-     * in it at once. A public collection cannot be deleted: a
-     * PermissionDeniedError (`collection_read_only`).
+     * in it at once. A knowledge base purged within 10 s answers `deleted`
+     * true, else `status` `purging`, the purge finishing in the background;
+     * both are success, and the client does not wait for a purge. A public
+     * collection cannot be deleted: a PermissionDeniedError
+     * (`collection_read_only`).
      */
     public function delete(string $collectionId): Deleted
     {
@@ -184,13 +226,17 @@ final class Collections
      * carries an Idempotency-Key, as create and enroll do, and is retried as
      * they are.
      *
+     * A document also takes `$pinned`, `$pinRank` (0 to 1,000) and `$title`
+     * (1 to 200 characters): every change but the title applies at once,
+     * never re-embedded or billed; a new title makes a new version (`202`).
+     *
      * @param array<string, mixed>|null $metadata
      *
      * @throws ValidationError|DecisionNodeError
      */
-    public function updateItem(string $collectionId, string $itemId, ?string $reference = null, mixed $label = self::UNSET, ?array $metadata = null): CollectionItem
+    public function updateItem(string $collectionId, string $itemId, ?string $reference = null, mixed $label = self::UNSET, ?array $metadata = null, ?bool $pinned = null, ?int $pinRank = null, ?string $title = null): CollectionItem
     {
-        return $this->updateItemAsync($collectionId, $itemId, $reference, $label, $metadata)->wait();
+        return $this->updateItemAsync($collectionId, $itemId, $reference, $label, $metadata, $pinned, $pinRank, $title)->wait();
     }
 
     /**
@@ -198,13 +244,13 @@ final class Collections
      *
      * @return PromiseInterface resolves with a CollectionItem
      */
-    public function updateItemAsync(string $collectionId, string $itemId, ?string $reference = null, mixed $label = self::UNSET, ?array $metadata = null): PromiseInterface
+    public function updateItemAsync(string $collectionId, string $itemId, ?string $reference = null, mixed $label = self::UNSET, ?array $metadata = null, ?bool $pinned = null, ?int $pinRank = null, ?string $title = null): PromiseInterface
     {
         $hasLabel = $label !== self::UNSET;
         if ($hasLabel && $label !== null && !is_string($label)) {
             throw new \InvalidArgumentException('label is a string, or null to remove it');
         }
-        LocalChecks::itemUpdate($reference !== null, $reference, $hasLabel, $label, $metadata !== null, $metadata);
+        LocalChecks::itemUpdate($reference !== null, $reference, $hasLabel, $label, $metadata !== null, $metadata, $pinned !== null, $pinRank, $title);
         $body = [];
         if ($reference !== null) {
             $body['reference'] = $reference;
@@ -214,6 +260,15 @@ final class Collections
         }
         if ($metadata !== null) {
             $body['metadata'] = self::metadataObject($metadata);
+        }
+        if ($pinned !== null) {
+            $body['pinned'] = $pinned;
+        }
+        if ($pinRank !== null) {
+            $body['pin_rank'] = $pinRank;
+        }
+        if ($title !== null) {
+            $body['title'] = $title;
         }
         $path = self::path($collectionId) . '/items/' . rawurlencode($itemId);
 
@@ -311,6 +366,314 @@ final class Collections
     }
 
     /**
+     * `POST /v1/collections/{id}/items`: adds a document to a knowledge base.
+     * Text and Markdown in memory, and a small UTF-8 text or Markdown file,
+     * are sent inline; every other file is uploaded first (one presign with
+     * the knowledge purpose, one PUT) and named by its upload id. The title
+     * is the one given, else a file's name without its extension; text in
+     * memory needs one. `$reference`, `$pinned`, `$pinRank`, `$label` and
+     * `$metadata` are sent only when given; on a scoped knowledge base the
+     * scope key's value in `$metadata` scopes the document, absent it is
+     * global.
+     *
+     * Ingestion is asynchronous: the document comes back `queued`. With
+     * `$wait` the server holds the call up to 10 s and answers once it is
+     * ready, else as it stands (20 s per attempt unless the client was given
+     * a timeout); `waitUntilReady()` waits longer. The call carries an
+     * Idempotency-Key, the same on every attempt. When an upload the call
+     * made is reported gone, the file is uploaded and the call sent once
+     * more, with a new key.
+     *
+     * @param array<string, mixed>|null $metadata
+     *
+     * @throws ValidationError|BadRequestError|DecisionNodeError
+     */
+    public function addDocument(string $collectionId, Document $document, ?string $title = null, ?string $reference = null, ?bool $pinned = null, ?int $pinRank = null, ?string $label = null, ?array $metadata = null, bool $wait = false): CollectionItem
+    {
+        return $this->addDocumentAsync($collectionId, $document, $title, $reference, $pinned, $pinRank, $label, $metadata, $wait)->wait();
+    }
+
+    /**
+     * @param array<string, mixed>|null $metadata
+     *
+     * @return PromiseInterface resolves with a CollectionItem
+     */
+    public function addDocumentAsync(string $collectionId, Document $document, ?string $title = null, ?string $reference = null, ?bool $pinned = null, ?int $pinRank = null, ?string $label = null, ?array $metadata = null, bool $wait = false): PromiseInterface
+    {
+        return $this->document('POST', self::path($collectionId) . '/items', $document, $title, $reference, $pinned, $pinRank, $label, $metadata, $wait);
+    }
+
+    /**
+     * `PUT /v1/collections/{id}/items/{item_id}`: replaces a document whole,
+     * sent as `addDocument()` sends it. A new text, format or title is a new
+     * version, the old one serving until the new one is ready; the same text
+     * again changes nothing and is free. A document made from a file is
+     * replaced by a file, one written as text by text.
+     *
+     * @param array<string, mixed>|null $metadata
+     *
+     * @throws ValidationError|BadRequestError|DecisionNodeError
+     */
+    public function replaceDocument(string $collectionId, string $itemId, Document $document, ?string $title = null, ?string $reference = null, ?bool $pinned = null, ?int $pinRank = null, ?string $label = null, ?array $metadata = null, bool $wait = false): CollectionItem
+    {
+        return $this->replaceDocumentAsync($collectionId, $itemId, $document, $title, $reference, $pinned, $pinRank, $label, $metadata, $wait)->wait();
+    }
+
+    /**
+     * @param array<string, mixed>|null $metadata
+     *
+     * @return PromiseInterface resolves with a CollectionItem
+     */
+    public function replaceDocumentAsync(string $collectionId, string $itemId, Document $document, ?string $title = null, ?string $reference = null, ?bool $pinned = null, ?int $pinRank = null, ?string $label = null, ?array $metadata = null, bool $wait = false): PromiseInterface
+    {
+        return $this->document('PUT', self::itemPath($collectionId, $itemId), $document, $title, $reference, $pinned, $pinRank, $label, $metadata, $wait);
+    }
+
+    /**
+     * @param array<string, mixed>|null $metadata
+     */
+    private function document(string $method, string $path, Document $document, ?string $title, ?string $reference, ?bool $pinned, ?int $pinRank, ?string $label, ?array $metadata, bool $wait): PromiseInterface
+    {
+        $plan = $this->documents()->plan($document, $title, $reference, $pinRank, $label, $metadata);
+        $fields = [];
+        foreach (['reference' => $reference, 'pinned' => $pinned, 'pin_rank' => $pinRank, 'label' => $label] as $key => $value) {
+            if ($value !== null) {
+                $fields[$key] = $value;
+            }
+        }
+        if ($metadata !== null) {
+            $fields['metadata'] = self::metadataObject($metadata);
+        }
+
+        return $this->sendDocument($method, $path . ($wait ? '?wait=true' : ''), $plan, $fields, $wait, false);
+    }
+
+    /**
+     * Uploads the document's file when it has one, then sends the item call.
+     * A stale upload the call placed is uploaded again once.
+     *
+     * @param array{body: array<string, mixed>, file: array{bytes: string, content_type: string, filename: string|null}|null} $plan
+     * @param array<string, mixed> $fields
+     */
+    private function sendDocument(string $method, string $path, array $plan, array $fields, bool $wait, bool $again): PromiseInterface
+    {
+        $file = $plan['file'];
+        $upload = $file !== null
+            ? $this->documents()->upload([$file])->then(static fn (array $ids): string => $ids[0])
+            : Create::promiseFor(null);
+
+        return $upload->then(function (?string $uploadId) use ($method, $path, $plan, $fields, $wait, $again): PromiseInterface {
+            $body = $plan['body'];
+            if ($uploadId !== null) {
+                $body['upload_id'] = $uploadId;
+            }
+
+            // A resend after a stale upload is another body, so it has its own key.
+            return $this->api->request(
+                $method,
+                $path,
+                Json::encode($body + $fields),
+                Api::RETRY_IDEMPOTENT,
+                timeout: $wait && !$this->timeoutSet ? self::WAIT_TIMEOUT : null,
+                idempotencyKey: Api::idempotencyKey(),
+            )->then(
+                static fn (array $result): CollectionItem => CollectionItem::fromArray(self::object($result)),
+                function (mixed $reason) use ($method, $path, $plan, $fields, $wait, $again, $uploadId): PromiseInterface {
+                    if (!$again && $uploadId !== null && $reason instanceof BadRequestError && in_array($reason->errorType, self::STALE_UPLOAD, true)) {
+                        return $this->sendDocument($method, $path, $plan, $fields, $wait, true);
+                    }
+                    throw $reason instanceof \Throwable ? $reason : new DecisionNodeError('The request failed.');
+                },
+            );
+        });
+    }
+
+    /**
+     * `DELETE /v1/collections/{id}/items?status=failed`: deletes every
+     * failed document of a knowledge base at once and answers how many.
+     * A failed document stays listed with its reason until it is deleted,
+     * counting toward nothing.
+     */
+    public function deleteFailedItems(string $collectionId): ItemsDeleted
+    {
+        return $this->deleteFailedItemsAsync($collectionId)->wait();
+    }
+
+    /**
+     * @return PromiseInterface resolves with an ItemsDeleted
+     */
+    public function deleteFailedItemsAsync(string $collectionId): PromiseInterface
+    {
+        return $this->request('DELETE', self::path($collectionId) . '/items?status=failed')->then(
+            static fn (array $body): ItemsDeleted => ItemsDeleted::fromArray($body),
+        );
+    }
+
+    /**
+     * `GET /v1/collections/{id}/items/{item_id}`: one item. With
+     * `$includeText` a document carries `text`, its stored text (null while
+     * no version is ready), which the byte offsets of its chunks and
+     * passages index as UTF-8.
+     */
+    public function getItem(string $collectionId, string $itemId, bool $includeText = false): CollectionItem
+    {
+        return $this->getItemAsync($collectionId, $itemId, $includeText)->wait();
+    }
+
+    /**
+     * @return PromiseInterface resolves with a CollectionItem
+     */
+    public function getItemAsync(string $collectionId, string $itemId, bool $includeText = false): PromiseInterface
+    {
+        return $this->request('GET', self::itemPath($collectionId, $itemId) . ($includeText ? '?include=text' : ''))->then(
+            static fn (array $body): CollectionItem => CollectionItem::fromArray($body),
+        );
+    }
+
+    /**
+     * `GET /v1/collections/{id}/items/{item_id}/chunks`: one page of a
+     * document's live chunks, in its order. `offset` is 0 or more and
+     * `limit` 1 to 100, each sent only when given.
+     *
+     * @throws BadRequestError for a query out of bounds, before anything is sent
+     */
+    public function listChunks(string $collectionId, string $itemId, ?int $offset = null, ?int $limit = null): ChunkPage
+    {
+        return $this->listChunksAsync($collectionId, $itemId, $offset, $limit)->wait();
+    }
+
+    /**
+     * @return PromiseInterface resolves with a ChunkPage
+     */
+    public function listChunksAsync(string $collectionId, string $itemId, ?int $offset = null, ?int $limit = null): PromiseInterface
+    {
+        LocalChecks::listQuery($offset, $limit);
+        $query = http_build_query(array_filter(['offset' => $offset, 'limit' => $limit], static fn (?int $v): bool => $v !== null), '', '&', PHP_QUERY_RFC3986);
+
+        return $this->request('GET', self::itemPath($collectionId, $itemId) . '/chunks' . ($query !== '' ? '?' . $query : ''))->then(
+            static fn (array $body): ChunkPage => ChunkPage::fromArray($body),
+        );
+    }
+
+    /**
+     * Waits until a document's ingestion has ended, reading it until its
+     * `status` is `ready` or `failed`, and returns it either way: a failed
+     * document is a value, its `error` saying why. Without `$itemId` it
+     * waits for the whole knowledge base, until none of its documents is
+     * queued or processing, and returns the collection.
+     *
+     * The first read is made at once; then it waits `$pollInterval` seconds
+     * (at least 0.1), half as long again after each read up to 10 s; each
+     * read is retried as any call, after the server's Retry-After.
+     *
+     * @throws \InvalidArgumentException for a poll interval under 0.1 s or a timeout not above 0, before anything is sent
+     * @throws TimeoutError when it has not ended within `$timeout` seconds
+     */
+    public function waitUntilReady(string $collectionId, ?string $itemId = null, float $timeout = self::DEFAULT_READY_TIMEOUT, float $pollInterval = self::DEFAULT_READY_POLL_INTERVAL): CollectionItem|Collection
+    {
+        return $this->waitUntilReadyAsync($collectionId, $itemId, $timeout, $pollInterval)->wait();
+    }
+
+    /**
+     * @return PromiseInterface resolves with a CollectionItem, or a Collection without `$itemId`
+     */
+    public function waitUntilReadyAsync(string $collectionId, ?string $itemId = null, float $timeout = self::DEFAULT_READY_TIMEOUT, float $pollInterval = self::DEFAULT_READY_POLL_INTERVAL): PromiseInterface
+    {
+        if (!is_finite($pollInterval) || $pollInterval < self::MIN_READY_POLL_INTERVAL) {
+            throw new \InvalidArgumentException(sprintf('pollInterval must be at least %s seconds, got %s.', self::MIN_READY_POLL_INTERVAL, var_export($pollInterval, true)));
+        }
+        if (!is_finite($timeout) || $timeout <= 0.0) {
+            throw new \InvalidArgumentException(sprintf('timeout must be a number of seconds above 0, got %s.', var_export($timeout, true)));
+        }
+
+        return $this->pollReady($collectionId, $itemId, $timeout, $pollInterval, microtime(true), 0.0, null);
+    }
+
+    /**
+     * One read, then another after the interval until the document or the
+     * knowledge base has settled.
+     */
+    private function pollReady(string $collectionId, ?string $itemId, float $timeout, float $interval, float $started, float $waited, ?float $delay): PromiseInterface
+    {
+        $path = $itemId === null ? self::path($collectionId) : self::itemPath($collectionId, $itemId);
+
+        return $this->api->request('GET', $path, delay: $delay)->then(
+            function (array $result) use ($collectionId, $itemId, $timeout, $interval, $started, $waited): mixed {
+                $body = self::object($result);
+                if ($itemId !== null) {
+                    $item = CollectionItem::fromArray($body);
+                    if ($item->settled()) {
+                        return $item;
+                    }
+                } else {
+                    $collection = Collection::fromArray($body);
+                    $counts = $collection->statusCounts ?? [];
+                    if (($counts['queued'] ?? 0) === 0 && ($counts['processing'] ?? 0) === 0) {
+                        return $collection;
+                    }
+                }
+                $spent = max($waited, microtime(true) - $started);
+                if ($spent >= $timeout) {
+                    throw new TimeoutError(sprintf(
+                        '%s was not ready within %s s.',
+                        $itemId === null ? 'The knowledge base ' . $collectionId : 'The document ' . $itemId,
+                        rtrim(rtrim(sprintf('%.3f', $timeout), '0'), '.'),
+                    ));
+                }
+
+                $wait = min($interval, $timeout - $spent);
+
+                return $this->pollReady($collectionId, $itemId, $timeout, min($interval * 1.5, self::MAX_READY_POLL_INTERVAL), $started, $waited + $wait, $wait);
+            },
+        );
+    }
+
+    /**
+     * `POST /v1/collections/{id}/search`: the passages of a knowledge base
+     * that a query finds, without a decision, as a {@see KnowledgeReading}
+     * with every passage's text. Each argument but the query is sent only
+     * when given, as given (`$match` and `$filter` are JSON values passed
+     * through; `$maxTokens` an integer or `"auto"`); the API checks them.
+     * Billed as one knowledge call; it needs a full-scope key.
+     *
+     * @param array<array-key, mixed>|object|null $match
+     * @param array<array-key, mixed>|object|null $filter
+     *
+     * @throws ServerError when the answer is not a well-formed reading
+     */
+    public function search(string $collectionId, string $query, ?string $scope = null, array|object|null $match = null, array|object|null $filter = null, ?int $topK = null, ?bool $pinned = null, int|string|null $maxTokens = null): KnowledgeReading
+    {
+        return $this->searchAsync($collectionId, $query, $scope, $match, $filter, $topK, $pinned, $maxTokens)->wait();
+    }
+
+    /**
+     * @param array<array-key, mixed>|object|null $match
+     * @param array<array-key, mixed>|object|null $filter
+     *
+     * @return PromiseInterface resolves with a KnowledgeReading
+     */
+    public function searchAsync(string $collectionId, string $query, ?string $scope = null, array|object|null $match = null, array|object|null $filter = null, ?int $topK = null, ?bool $pinned = null, int|string|null $maxTokens = null): PromiseInterface
+    {
+        $body = ['query' => $query];
+        foreach (['scope' => $scope, 'match' => $match, 'filter' => $filter, 'top_k' => $topK, 'pinned' => $pinned, 'max_tokens' => $maxTokens] as $key => $value) {
+            if ($value !== null) {
+                $body[$key] = $value;
+            }
+        }
+
+        return $this->api->request('POST', self::path($collectionId) . '/search', Json::encode($body))->then(
+            static function (array $result): KnowledgeReading {
+                $body = self::object($result);
+                if (!KnowledgeReading::wellFormed($body)) {
+                    throw self::invalid($result, 'the response is not a well-formed knowledge reading');
+                }
+
+                return new KnowledgeReading($body);
+            },
+        );
+    }
+
+    /**
      * Metadata as the API takes it: always a JSON object, so an empty one is
      * sent as {}.
      *
@@ -326,6 +689,16 @@ final class Collections
     private static function path(string $collectionId): string
     {
         return '/v1/collections/' . rawurlencode($collectionId);
+    }
+
+    private static function itemPath(string $collectionId, string $itemId): string
+    {
+        return self::path($collectionId) . '/items/' . rawurlencode($itemId);
+    }
+
+    private function documents(): Documents
+    {
+        return $this->documents ?? throw new \LogicException('This client takes no documents.');
     }
 
     /**

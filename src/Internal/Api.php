@@ -177,6 +177,11 @@ final class Api
         if ($status === 529 && Errors::detailReason($text) === 'enrollment_unpriced') {
             return false;
         }
+        // Knowledge waiting on an ingestion outage: the caller decides, so
+        // the 529 ingestion_delayed is raised at once.
+        if ($status === 529 && Errors::detailReason($text) === 'ingestion_delayed') {
+            return false;
+        }
         // A key whose daily spend cap is reached stays so until 00:00 UTC:
         // the 429 key_spend_cap_reached is never retried.
         if ($status === 429 && Errors::errorType($text) === 'key_spend_cap_reached') {
@@ -203,19 +208,21 @@ final class Api
      * written once), so it is success.
      *
      * @param array<string, string> $headers
+     * @param float|null            $timeout seconds per attempt; default the client's upload timeout
      *
      * @return PromiseInterface resolves with null
      */
-    public function put(string $url, array $headers, string $bytes): PromiseInterface
+    public function put(string $url, array $headers, string $bytes, ?float $timeout = null): PromiseInterface
     {
-        $attempt = function (int $n, ?float $wait) use (&$attempt, $url, $headers, $bytes): PromiseInterface {
+        $timeout ??= $this->uploadTimeout;
+        $attempt = function (int $n, ?float $wait) use (&$attempt, $url, $headers, $bytes, $timeout): PromiseInterface {
             $request = new Request('PUT', $url, $headers, $bytes);
             $started = microtime(true) + ($wait ?? 0.0);
             $path = (string) parse_url($url, PHP_URL_PATH);
 
             // A storage PUT has its own timeout: an image of several MB may
             // take longer than an API attempt is allowed.
-            return $this->transport->send($request, $wait, $this->uploadTimeout, true)->then(
+            return $this->transport->send($request, $wait, $timeout, true)->then(
                 function (ResponseInterface $response) use (&$attempt, $n, $started, $path): mixed {
                     $status = $response->getStatusCode();
                     $this->log('PUT', $path, $n, $status, null, $started);

@@ -45,6 +45,9 @@ use Bynn\DecisionNode\Collection;
 use Bynn\DecisionNode\CollectionItem;
 use Bynn\DecisionNode\CollectionItemPage;
 use Bynn\DecisionNode\Deleted;
+use Bynn\DecisionNode\ChunkPage;
+use Bynn\DecisionNode\Document;
+use Bynn\DecisionNode\KnowledgeReading;
 use Bynn\DecisionNode\CreatedKey;
 use Bynn\DecisionNode\Key;
 use Bynn\DecisionNode\KeyPage;
@@ -520,6 +523,8 @@ final class Suite
             Compare::match($exp->batch, self::batch($result), 'batch');
         } elseif (property_exists($exp, 'batch_page')) {
             Compare::match($exp->batch_page, self::batchPage($result), 'batch_page');
+        } elseif (property_exists($exp, 'knowledge')) {
+            Compare::match($exp->knowledge, self::knowledge($result, 'knowledge'), 'knowledge');
         } elseif (($kind = self::collectionKind($exp)) !== null) {
             self::checkCollectionResult($kind, $exp->{$kind}, $result, $kind);
         } elseif (property_exists($exp, 'batch_results')) {
@@ -1133,6 +1138,16 @@ final class Suite
                         return self::video($a, $ctx);
                     case '$frame':
                         return self::frame($a);
+                    case '$knowledge':
+                        // Booster::knowledge(collection, ...), each argument passed only when present
+                        $named = [];
+                        foreach (get_object_vars($a) as $arg => $v) {
+                            $named[lcfirst(str_replace('_', '', ucwords((string) $arg, '_')))] = self::decode($v, $ctx);
+                        }
+
+                        return Booster::knowledge(...$named);
+                    case '$document':
+                        return self::document($a, $ctx);
                     case '$booster':
                         // Booster(name, images, require, options), each argument passed only when present
                         $named = ['name' => (string) $a->name];
@@ -1205,6 +1220,53 @@ final class Suite
         }
 
         return Image::fromData($id, $data, $mediaType);
+    }
+
+    /**
+     * A document: text, a file by path, bytes (`data_base64`, `data_text`
+     * as UTF-8 or `repeat_text`), a stream (`stream_base64`) or an upload
+     * id; `pad_to` as for an image.
+     *
+     * @param array<string, mixed> $ctx
+     */
+    private static function document(\stdClass $a, array $ctx): Document
+    {
+        $contentType = isset($a->content_type) ? (string) $a->content_type : null;
+        $filename = isset($a->filename) ? (string) $a->filename : null;
+        if (property_exists($a, 'text')) {
+            return Document::fromText((string) self::decode($a->text, $ctx), isset($a->format) ? (string) $a->format : null);
+        }
+        if (isset($a->upload_id)) {
+            return Document::fromUploadId((string) self::decode($a->upload_id, $ctx));
+        }
+        if (isset($a->path) && !isset($a->pad_to)) {
+            return Document::fromPath(self::dir() . '/' . $a->path, $contentType, $filename);
+        }
+        if (isset($a->data_text)) {
+            $data = (string) $a->data_text;
+        } elseif (isset($a->repeat_text)) {
+            $data = str_repeat((string) $a->repeat_text->repeat, (int) $a->repeat_text->times);
+        } elseif (isset($a->path)) {
+            $data = (string) file_get_contents(self::dir() . '/' . $a->path);
+            $filename ??= basename((string) $a->path);
+        } else {
+            $data = (string) base64_decode((string) ($a->data_base64 ?? $a->stream_base64), true);
+        }
+        if (isset($a->pad_to)) {
+            $data .= str_repeat("\0", max(0, (int) $a->pad_to - strlen($data)));
+        }
+        if (isset($a->stream_base64)) {
+            $stream = fopen('php://memory', 'r+b');
+            if ($stream === false) {
+                throw new Fail('cannot open a memory stream');
+            }
+            fwrite($stream, $data);
+            rewind($stream);
+
+            return Document::fromStream($stream, $contentType, $filename);
+        }
+
+        return Document::fromData($data, $contentType, $filename);
     }
 
     /**
@@ -1353,10 +1415,34 @@ final class Suite
             $r instanceof DepthReading => ['kind' => 'bynn_depth', 'image' => $r->image, 'ahead' => $r->ahead, 'directions' => $r->directions, 'ground' => $r->ground,
                 'grid_rows' => $r->gridRows, 'grid_cols' => $r->gridCols, 'grid' => $r->grid, 'depth_min' => $r->depthMin, 'depth_max' => $r->depthMax,
                 'depth_median' => $r->depthMedian, 'width' => $r->width, 'height' => $r->height],
+            $r instanceof KnowledgeReading => self::knowledge($r, 'reading'),
             $r instanceof SegmentReading => ['kind' => 'bynn_segment', 'image' => $r->image, 'width' => $r->width, 'height' => $r->height, 'prompts' => $r->prompts,
                 'instances' => $r->instances, 'depth_source' => $r->depthSource, 'assumed_hfov_deg' => $r->assumedHfovDeg],
             default => ['kind' => 'unknown', 'raw' => $r->raw],
         };
+    }
+
+    /**
+     * A knowledge reading by its typed fields' wire names, each passage too;
+     * an empty field as null.
+     *
+     * @return array<string, mixed>
+     */
+    private static function knowledge(mixed $r, string $path): array
+    {
+        if (!$r instanceof KnowledgeReading) {
+            throw new Fail($path . ': expected a KnowledgeReading, got ' . self::describe($r));
+        }
+        $passages = [];
+        foreach ($r->passages as $p) {
+            $passages[] = ['n' => $p->n, 'pinned' => $p->pinned, 'item' => $p->item, 'reference' => $p->reference, 'title' => $p->title,
+                'heading' => $p->heading, 'chunk' => $p->chunk, 'byte_start' => $p->byteStart, 'byte_end' => $p->byteEnd, 'tokens' => $p->tokens,
+                'score' => $p->score, 'lexical' => $p->lexical, 'rendered' => $p->rendered, 'text' => $p->text];
+        }
+
+        return ['kind' => 'knowledge', 'collection' => $r->collection, 'collection_name' => $r->collectionName, 'corpus' => $r->corpus,
+            'query' => $r->query, 'budget' => $r->budget, 'scope' => $r->scope, 'warnings' => $r->warnings, 'passages' => $passages,
+            'omitted' => $r->omitted, 'pending_items' => $r->pendingItems, 'search' => $r->search, 'truncated' => $r->truncated];
     }
 
     /**
@@ -1386,7 +1472,7 @@ final class Suite
     }
 
     /** The expectations of the collections calls' results. */
-    private const COLLECTION_KINDS = ['collection', 'collections', 'item', 'item_page', 'deleted', 'key_usage', 'usage_page', 'usage_items',
+    private const COLLECTION_KINDS = ['collection', 'collections', 'item', 'item_page', 'chunk_page', 'deleted', 'key_usage', 'usage_page', 'usage_items',
         'created_key', 'api_key', 'key_page', 'api_keys', 'key_revoked', 'keys_revoked'];
 
     /** The keys calls' results, each compared by the object as sent. */
@@ -1482,6 +1568,21 @@ final class Suite
                 }
 
                 return;
+            case 'chunk_page':
+                if (!$result instanceof ChunkPage) {
+                    throw new Fail($path . ': expected a ChunkPage, got ' . self::describe($result));
+                }
+                $got = [
+                    'chunks' => array_map(static fn ($c): array => [
+                        'chunk' => $c->chunk, 'heading' => $c->heading, 'byte_start' => $c->byteStart, 'byte_end' => $c->byteEnd,
+                        'page_start' => $c->pageStart, 'page_end' => $c->pageEnd, 'tokens' => $c->tokens, 'text' => $c->text,
+                    ] + $c->raw, $result->chunks),
+                    'offset' => $result->offset,
+                    'limit' => $result->limit,
+                    'total' => $result->total,
+                    'next_offset' => $result->nextOffset,
+                ] + $result->raw;
+                break;
             case 'item_page':
                 if (!$result instanceof CollectionItemPage) {
                     throw new Fail($path . ': expected a CollectionItemPage, got ' . self::describe($result));
@@ -1501,7 +1602,7 @@ final class Suite
                 if (!$result instanceof Deleted) {
                     throw new Fail($path . ': expected a Deleted, got ' . self::describe($result));
                 }
-                $got = ['id' => $result->id, 'deleted' => $result->deleted];
+                $got = ['id' => $result->id, 'deleted' => $result->raw['deleted'] ?? null, 'status' => $result->status] + $result->raw;
         }
         Compare::match($expected, $got, $path);
     }
@@ -1760,7 +1861,10 @@ final class Suite
                 case 'batch_page':
                     Compare::match($spec->batch_page ?? new \stdClass(), self::batchPage($result), $path . '.batch_page');
                     break;
-                case 'collection':
+                case 'knowledge':
+                    Compare::match($spec->knowledge ?? new \stdClass(), self::knowledge($result, $path . '.knowledge'), $path . '.knowledge');
+                    break;
+                case 'chunk_page':
                 case 'collections':
                 case 'item':
                 case 'item_page':

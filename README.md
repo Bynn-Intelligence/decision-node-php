@@ -280,7 +280,7 @@ dn truth "Does a person fall in the video?" --video dock.mp4 --fps 2
 
 ## Boosters
 
-A booster is a specialist model that reads the request's images before the decision. Its reading is added to what the model sees as evidence, and comes back in the response. The model still answers every question: a booster never answers one, and a request without boosters is answered exactly as before.
+A booster is a specialist model that reads the request's images (`knowledge` reads its state and questions, against your own documents) before the decision. Its reading is added to what the model sees as evidence, and comes back in the response. The model still answers every question: a booster never answers one, and a request without boosters is answered exactly as before.
 
 | Booster | Reads | Each reading |
 |---|---|---|
@@ -291,6 +291,7 @@ A booster is a specialist model that reads the request's images before the decis
 | `ocr` (`Booster::OCR`) | Any picture; `Booster::ocr($prompt)` asks for something specific | `OcrReading`: `image`, `text` (the text, or the answer to the prompt) and `truncated` |
 | `bynn_depth` (`Booster::DEPTH`), Depth Vision | Any picture; `Booster::depth($gridSize)` sets the grid, 2 to 16 cells a side (8) | `DepthReading`, in meters: `image`, `ahead` (the nearest obstacle straight ahead, the floor left out; `null` when none is found), `directions` (the same in 7 strips from left to right, each `null` when none), `ground` (a floor was found and left out), `gridRows`, `gridCols` and `grid` (row by row from the top left), `depthMin`, `depthMax`, `depthMedian`, and the picture's `width` and `height` in pixels. Estimates from one picture, for decisions and planning, never a safety stop |
 | `bynn_segment` (`Booster::SEGMENT`), Segment Vision | Any picture, with what to find: `Booster::segment($prompt)`, a phrase or 1 to 4 phrases of at most 120 characters, and `maxInstances` (1 to 16, 8), `minScore` (0 to 1, 0.25), `polygonPoints` (3 to 64, 24) and `depth` (true) | `SegmentReading`: `image`, `width`, `height`, `prompts`, `instances` by score, each as sent (`label`, the phrase it matched, `score`, `box`, `polygon`, `area`, `centroid`, `opening`, the largest hole it encloses or `null`, and with depth on its `depth` and `size_m` in meters), `depthSource` and `assumedHfovDeg`. Coordinates are fractions of the picture from its top left; distances and sizes are estimates, never a safety stop |
+| `knowledge` (`Booster::KNOWLEDGE`) | The request's state and questions, never a picture, against one of your knowledge bases: `Booster::knowledge($collection, ...)`, see [Knowledge](#knowledge) | One `KnowledgeReading`: the passages that apply, pinned first, each citing its document, chunk and byte offsets |
 
 ```php
 use Bynn\DecisionNode\{AgeReading, AiGeneratedReading, Image};
@@ -352,7 +353,7 @@ foreach ($d->evidence['bynn_segment']->results as $r) {
 | `name` | The booster's name. |
 | `images` | The ids of the request's images the booster reads. Left out: every image of the request. |
 | `require` | `true`: a booster that fails or does not answer in time fails the request with a 529 `OverloadedError` whose `errorType` is `booster_unavailable`, retried like any 529. Left out or `false`: the decision runs without that reading, and its evidence says why. |
-| `options` | The booster's settings: `ocr`'s `prompt`, `face_recognition`'s `collection` and `threshold`, `bynn_depth`'s `grid_size`, and `bynn_segment`'s `prompt`, `max_instances`, `min_score`, `polygon_points` and `depth`. `Booster::ocr()`, `Booster::faceRecognition()`, `Booster::depth()` and `Booster::segment()` set them. |
+| `options` | The booster's settings: `ocr`'s `prompt`, `face_recognition`'s `collection` and `threshold`, `bynn_depth`'s `grid_size`, `bynn_segment`'s `prompt`, `max_instances`, `min_score`, `polygon_points` and `depth`, and `knowledge`'s `collection` and its options. `Booster::ocr()`, `Booster::faceRecognition()`, `Booster::depth()`, `Booster::segment()` and `Booster::knowledge()` set them. |
 
 `$d->evidence` holds one `Evidence` per booster the request named, by name, in the request's order: `version` (the booster's version, such as `age-v3`), `status` (`ok`; `timeout`, no answer in its time; `error`; `skipped`, none of the request's images is one it reads), `latencyMs`, `billedCalls` (the calls of that booster billed on this request) and `results`, one reading per picture the booster was to read. A reading of a booster this version does not know, or one with a field missing or of the wrong type, is an `UnknownReading` whose `raw` holds its fields; the decision does not fail. So is a picture the booster did not read (it timed out or failed: `['image' => 'selfie']`, `status` says why) or could not decode (`['image' => 'selfie', 'readable' => false]`); neither is billed. Fields a reading adds that this version does not know are ignored. Without boosters, `evidence` and both usage fields are `null`.
 
@@ -362,7 +363,7 @@ Booster calls are billed one per booster and image read with status `ok`, at the
 
 ## Collections
 
-A collection holds the faces of the people you enroll, for decisions to search. `$dn->collections` creates, lists, reads and deletes the workspace's collections, and enrolls, lists, edits and deletes their items, each result with its fields as sent and `raw`:
+A collection holds the faces of the people you enroll, for decisions to search. (A collection of documents, a knowledge base, is in [Knowledge](#knowledge).) `$dn->collections` creates, lists, reads and deletes the workspace's collections, and enrolls, lists, edits and deletes their items, each result with its fields as sent and `raw`:
 
 ```php
 $col = $dn->collections->create('Staff, Stockholm office');
@@ -381,6 +382,117 @@ $item = $dn->collections->updateItem($col->id, $item->id, label: null);
 - `updateItem` sends only the arguments given: `reference`, `label` (`null` sends `null` and removes it) and `metadata`, which replaces the item's whole metadata (`[]` is sent as `{}` and removes every key).
 - `listItems` pages with `offset` and `limit`, and finds the items of one `reference` or of a `referencePrefix`; the page carries `totalCapped`, `reference` and `referencePrefix` as sent.
 - Checked locally, with the API's entries: a name of 1 to 80 characters, a reference of 1 to 64 of `A-Z a-z 0-9 _ . : -`, a label of 1 to 128 characters, and metadata of at most 20 keys of 1 to 40 of `a-z 0-9 _`, each value a text of at most 500 characters, a number, or true or false. An enrolled image's URL is checked as a decision's.
+
+## Knowledge
+
+A knowledge base is a collection of your own documents: policies, house rules, manuals, a mission's special instructions. The `knowledge` booster finds the passages of it that apply to a request and gives them to the decision as facts and rules to apply, with citations back to the document they came from.
+
+### Create a knowledge base and add documents
+
+```php
+use Bynn\DecisionNode\Document;
+
+$kb = $dn->collections->create('Claims policy', type: 'text', scopeKey: 'mission');
+
+// Markdown (or plain text) held in memory is sent inline.
+$rules = $dn->collections->addDocument(
+    $kb->id,
+    Document::fromText("# Receipts\n\nReject any claim over 500 SEK without a receipt."),
+    title: 'Claims policy 2026',
+    reference: 'policy-2026',
+);
+
+// A file from a path: uploaded, then converted to text.
+$manual = $dn->collections->addDocument($kb->id, Document::fromPath('handbooks/claims-handbook.pdf'));
+
+$manual = $dn->collections->waitUntilReady($kb->id, $manual->id);   // 'ready' or 'failed'
+```
+
+A document is `Document::fromText($text, $format)` (`markdown`, the default, or `text`), `Document::fromPath($path)`, `Document::fromData($bytes, $contentType, $filename)`, `Document::fromStream($stream, $contentType, $filename)` (a stream resource or a PSR-7 stream, read to its end once) or `Document::fromUploadId($uploadId)` for a file uploaded before with `$dn->uploadDocuments([...])`. A file's type comes from `$contentType`, else from its name's extension, else from its first bytes; DOCX, PPTX, XLSX and text need a type or a file name. The title is the one you give, else the file's name without its extension; text in memory needs one.
+
+A PDF, DOCX, PPTX, XLSX, HTML file or picture is converted to text. Once a document is ready only its text is kept, cut into chunks: the original file is deleted. A small UTF-8 text or Markdown file (under the client's `inlineThreshold`) is sent inline in one call; every other file is uploaded first, then named by its upload id.
+
+Ingestion is asynchronous: a document comes back `queued`, then is `processing` (`stage` `extracting` for a converted file, `chunking`, `embedding`, with `progress`), then `ready` or `failed` (its `error` saying why). `wait: true` on `addDocument` and `replaceDocument` asks the server to hold the call up to 10 seconds and answer once the document is ready, else as it stands. `waitUntilReady($collectionId, $itemId)` reads the document until it is `ready` or `failed` and returns it either way; without an item id it waits until no document of the knowledge base is queued or processing, and returns the collection. It waits 1 s between reads at first, growing to 10 s, for at most 300 s (`timeout:` and `pollInterval:` change both), then throws `TimeoutError`.
+
+| Call | Does |
+|---|---|
+| `create($name, type: 'text', scopeKey: ...)` | A knowledge base. Its `Collection` carries `scopeKey`, `chunks`, `tokens`, `version`, `statusCounts` and `pinned` (the pinned load: `tokens`, `cap`, `largest_scope`) |
+| `addDocument($collectionId, $document, title:, reference:, pinned:, pinRank:, label:, metadata:, wait:)` | Adds a document; every argument is sent only when given |
+| `replaceDocument($collectionId, $itemId, $document, ...)` | Replaces it whole: a new version, the old one serving until the new one is ready; the same text again changes nothing and is free |
+| `updateItem($collectionId, $itemId, reference:, label:, metadata:, pinned:, pinRank:, title:)` | Changes only what you give, at once and free; a new title makes a new version |
+| `getItem($collectionId, $itemId, includeText: true)` | One document; with `includeText` its stored text in `text` |
+| `listItems($collectionId, ...)`, `listChunks($collectionId, $itemId, offset:, limit:)` | The documents, and one document's chunks (`chunk`, `heading`, `byteStart`, `byteEnd`, `pageStart`, `pageEnd`, `tokens`, `text`) |
+| `deleteFailedItems($collectionId)` | Deletes every failed document at once (a failed document stays listed with its reason until deleted, counting toward nothing) and answers how many: `deleted` |
+| `deleteItem($collectionId, $itemId)`, `delete($collectionId)` | Deletes a document with its text and chunks, or the whole knowledge base (`deleted` true, or `status` `purging` while the purge finishes in the background) |
+| `search($collectionId, $query, scope:, match:, filter:, topK:, pinned:, maxTokens:)` | The passages a query finds, without a decision |
+
+Adding, replacing and changing a document send an `Idempotency-Key`, the same on every attempt, so they are retried like any call and applied once. A document's item carries `title`, `format`, `pinned`, `pinRank`, `source` (`article` for text, `file` for a converted file), `file` (`filename`, `content_type`, `byte_size`, `pages`, `original_held`), `status`, `stage`, `progress`, `serving`, `error`, `delayed`, `warnings`, `chunks`, `tokens`, `contentSha256`, `version`, `queuedAt` and `readyAt`, each as sent.
+
+### Pinned rules and scopes
+
+A rule that must always apply is pinned: a pinned document is given to every request that names the knowledge base, ahead of the passages found by search, in `pinRank` order.
+
+```php
+$dn->collections->addDocument($kb->id, Document::fromText('Never approve a claim for a vehicle marked as stolen.'),
+    title: 'Stolen vehicles', pinned: true, pinRank: 0);
+```
+
+A knowledge base created with a scope key (`mission` here, fixed for its life) holds global documents and documents of one scope value, given in `metadata`. A request names the value in `scope`: it sees the global documents and those of that value, never another's.
+
+```php
+$dn->collections->addDocument($kb->id, Document::fromPath('missions/m-42-brief.md'), metadata: ['mission' => 'M-42']);
+```
+
+### A decision with knowledge
+
+```php
+use Bynn\DecisionNode\{Booster, KnowledgeReading};
+
+$d = $dn->decide(
+    state: ['claim' => 'Windscreen, 620 SEK, no receipt attached.'],
+    questions: ['approve' => truth('Approve this claim?')],
+    boosters: [Booster::knowledge($kb->id, scope: 'M-42', require: true)],
+);
+
+$reading = $d->evidence['knowledge']->results[0];
+if ($reading instanceof KnowledgeReading) {
+    foreach ($reading->passages as $p) {
+        echo "{$p->n}. {$p->title} > {$p->heading} ({$p->item}, chunk {$p->chunk}, bytes {$p->byteStart}-{$p->byteEnd})\n";
+    }
+}
+```
+
+`Booster::knowledge($collection, query:, scope:, match:, filter:, topK:, maxTokens:, pinned:, minScore:, includeText:, require:)` sends `{"name": "knowledge", "options": {...}}` with every option given, as given; the API checks them. Without `query` the query is built from the request's questions and state. `topK: 0` gives the pinned documents only. `require: true` fails the request when the retrieval cannot run over a ready knowledge base.
+
+The reading is a `KnowledgeReading`: `collection`, `collectionName`, `corpus`, `query`, `budget`, `scope`, `warnings` (such as `scope_not_named` when a scoped knowledge base was searched without a scope), `passages`, `omitted`, `pendingItems`, `search` and `truncated`. Each passage cites its document (`item`, `reference`, `title`), its chunk (`chunk`, `heading`) and where it sits in the document's stored text: `byteStart` to `byteEnd`, UTF-8 byte offsets, the end exclusive. PHP strings are bytes, so `substr($text, $p->byteStart, $p->byteEnd - $p->byteStart)` on the text of `getItem($kb->id, $p->item, includeText: true)` is the passage. `score` is null for a pinned passage. With `includeText: true` (a full-scope key) each passage carries its `text`. A reading with a field missing or of the wrong type is an `UnknownReading`.
+
+### Search
+
+To try a query without a decision, `search()` returns the same `KnowledgeReading`, with every passage's text:
+
+```php
+$found = $dn->collections->search($kb->id, 'receipts for windscreen claims', scope: 'M-42', topK: 5);
+```
+
+### Errors and limits
+
+| When | Raised |
+|---|---|
+| `require: true` on a knowledge base with nothing ready and nothing being processed | `DecisionNodeError` with status 409, `errorType` `knowledge_collection_empty`, `details['items']` and `details['failed']` |
+| `require: true` while documents are still being processed | `OverloadedError` (`booster_unavailable`) with `retryAfter` 5, retried like any 529 |
+| `require: true` while ingestion is delayed (`details['reason']` `ingestion_delayed`) | `OverloadedError` with `retryAfter` 60, raised at once: you decide whether to wait |
+| Too many documents waiting, or too many tokens embedded within the hour | `RateLimitError` with `details['reason']` `ingest_queue_full` or `ingest_tokens_per_hour` and `retryAfter`, retried like any 429 |
+| A text over 512 KiB once normalised | `RequestTooLargeError`, `errorType` `item_too_large` |
+| A text that is not UTF-8 or holds a NUL | `ValidationError`, `errorType` `invalid_text` |
+| A pin past the pinned cap; a reference another document has | `DecisionNodeError` with status 409, `errorType` `pinned_budget_exceeded` or `reference_taken` (`details['item_id']`) |
+| A face collection named by `knowledge` or `search` | `BadRequestError`, `errorType` `collection_type_mismatch` |
+| `search`, `includeText` or a knowledge upload from a key that is not full-scope | `PermissionDeniedError`, `errorType` `key_scope_denied` |
+
+Checked before anything is sent, as the API answers: a type other than `face` or `text`, a scope key not 1 to 40 of `a-z 0-9 _`, a title not 1 to 200 characters, a missing title, an empty text, a `pinRank` outside 0 to 1,000, a `format` other than `markdown` or `text`, the reference, label and metadata rules of [Collections](#collections), and a file that is empty, over 50 MB or not one of the types below.
+
+A file is one of `text/plain`, `text/markdown`, `application/pdf`, DOCX, PPTX, XLSX, `text/html`, `image/png`, `image/jpeg`, `image/tiff` and `image/webp`, at most 50 MB; a PDF at most 100 pages; and its text at most 512 KiB once extracted. An upload's `PUT` has 120 s per attempt unless you set `uploadTimeout`.
+
+A knowledge call (one retrieval on a decision, or one search) is billed at USD 0.001, whatever it retrieves; ingestion and storage are priced on [Pricing](https://decisionnode.com/docs/pricing#boosters).
 
 ## Per-key usage
 
@@ -536,10 +648,10 @@ Only a 2xx response with a JSON body is a success. Redirects are never followed,
 | 413 | `RequestTooLargeError`, never retried | |
 | 422 | `ValidationError` | `entries` |
 | 429 | `RateLimitError` (a publishable key's per-address rate and calls in flight carry `details['reason']` `client_rate` or `in_flight`), never retried when `errorType` is `key_spend_cap_reached`, a key's daily spend cap, reached until 00:00 UTC (`details`: `resets_at`, `cap`, `spent`); `SessionLimitError` when a key holds as many open sessions as it may | `retryAfter` (seconds) |
-| 529 (also `booster_unavailable`; never retried when `details` has the reason `enrollment_unpriced`) | `OverloadedError` | `retryAfter` (seconds) |
+| 529 (also `booster_unavailable`; never retried when `details` has the reason `enrollment_unpriced` or `ingestion_delayed`) | `OverloadedError` | `retryAfter` (seconds) |
 | other 5xx, a 2xx whose body is not JSON, or a 2xx where the answer of `check`, `classify`, `score` or `number` is missing or malformed | `ServerError` | |
 | any other status (a 3xx, 405, 409, 410, 413, 408 once its retries are used up) | `DecisionNodeError` itself | |
-| an image upload's storage refused the bytes | `DecisionNodeError` itself, `errorType` `upload_failed`, the storage's error code in `reason` | |
+| an upload's storage refused the bytes (an image's or a document's) | `DecisionNodeError` itself, `errorType` `upload_failed`, the storage's error code in `reason` | |
 | no response | `ConnectionError`, `TimeoutError` | |
 
 ```php
@@ -592,7 +704,7 @@ Each attempt times out after 10 seconds, counted over the whole attempt: from se
 $dn = new DecisionNode(timeout: 5.0, maxRetries: 4);
 ```
 
-A request whose boosters name `ocr` has 30 seconds per attempt (`DecisionNode::OCR_TIMEOUT`) unless you set `timeout`, which is then used as given. It is never retried after a timeout, because the server finishes the timed-out attempt and may bill it; its other retries stay. Give such requests a timeout of at least 30 seconds.
+A document call with `wait: true` has 20 seconds per attempt (the server holds it up to 10) unless you set `timeout`. A request whose boosters name `ocr` has 30 seconds per attempt (`DecisionNode::OCR_TIMEOUT`) unless you set `timeout`, which is then used as given. It is never retried after a timeout, because the server finishes the timed-out attempt and may bill it; its other retries stay. Give such requests a timeout of at least 30 seconds.
 
 `timeout` must be above 0 and `maxRetries` 0 or more; anything else throws `InvalidArgumentException`. There is no setting for an unlimited timeout.
 
@@ -625,7 +737,7 @@ $d->raw['safety'];   // the same scores, from the body
 | `httpClient` | | your own `GuzzleHttp\Client` (rules below) |
 | `logger` | | none |
 | `inlineThreshold` | | `524288` bytes: local images of a request under it in all go inline, at or above it they are uploaded |
-| `uploadTimeout` | | `60.0` seconds for one storage `PUT` of an image upload; above 0 |
+| `uploadTimeout` | | `60.0` seconds for one storage `PUT` of an image upload, `120.0` for a document's; when given, it holds for both; above 0 |
 | `clock` | | the system clock: a `Closure` returning the Unix time in seconds, which upload URLs and cached uploads are judged by (for tests) |
 
 An argument wins over the environment, which wins over the default. An empty string counts as not given, for the client's arguments and for the `$model` of a call. A base URL that is not `https`, from an argument or from the environment, throws `InvalidArgumentException` when the client is made, so the API key never travels unencrypted; plain `http` is accepted only for this machine (`localhost`, `127.0.0.1`, `::1`), for a local test server. The models are `decisionnode-moe`, the main model, and `decisionnode-flash`, the fast one: each always means its current release. A decision's `model` names the pinned id that answered, `decisionnode-<family>-<version>`; to pin a version, take its id from `models()` rather than writing one down. The earlier ids `decisionnode-latest`, `decisionnode-flash-latest`, `decisionnode-1.0` and `decisionnode-1.0-flash` are still accepted. A [fine-tuned model](#fine-tuned-models) of yours goes in `model` too.

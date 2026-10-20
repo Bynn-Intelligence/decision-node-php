@@ -11,6 +11,7 @@ use Bynn\DecisionNode\Exception\SessionLimitError;
 use Bynn\DecisionNode\Exception\TimeoutError;
 use Bynn\DecisionNode\Exception\ValidationError;
 use Bynn\DecisionNode\Internal\Api;
+use Bynn\DecisionNode\Internal\Documents;
 use Bynn\DecisionNode\Internal\GuzzleTransport;
 use Bynn\DecisionNode\Internal\Held;
 use Bynn\DecisionNode\Internal\Images;
@@ -50,7 +51,7 @@ final class DecisionNode
     public const VERSION = '0.3.4';
 
     /** The version of the DecisionNode SDK specification this client implements. */
-    public const SPEC_VERSION = '1.3';
+    public const SPEC_VERSION = '1.4';
 
     public const DEFAULT_BASE_URL = 'https://api.decisionnode.com';
 
@@ -65,6 +66,9 @@ final class DecisionNode
 
     /** Seconds one storage PUT of an image upload may take, apart from the API attempt's timeout. */
     public const DEFAULT_UPLOAD_TIMEOUT = 60.0;
+
+    /** Seconds one storage PUT of a document may take when no upload timeout was given: a file is up to 50 MB. */
+    public const DEFAULT_DOCUMENT_UPLOAD_TIMEOUT = Documents::DEFAULT_UPLOAD_TIMEOUT;
 
     public const DEFAULT_CONCURRENCY = 8;
 
@@ -103,7 +107,11 @@ final class DecisionNode
     /** The Batch API. */
     public readonly Batches $batches;
 
-    /** The Collections API: the workspace's collections of faces, which the face_recognition booster searches. */
+    /**
+     * The Collections API: the workspace's collections of faces, which the
+     * face_recognition booster searches, and its knowledge bases, which the
+     * knowledge booster searches.
+     */
     public readonly Collections $collections;
 
     /** Per-key usage: each key's calls and cost over a period. */
@@ -115,6 +123,8 @@ final class DecisionNode
     private readonly Api $api;
 
     private readonly Images $images;
+
+    private readonly Documents $documents;
 
     private readonly Held $held;
 
@@ -134,8 +144,8 @@ final class DecisionNode
      * @param int|null                                 $inlineThreshold bytes; default DEFAULT_INLINE_THRESHOLD (524,288)
      * @param (\Closure(): float)|null                  $clock           the current Unix time in seconds, which upload URLs and cached
      *                                                                  uploads are judged by; default the system clock (for tests)
-     * @param float                                    $uploadTimeout   seconds for one storage PUT of an image upload, above 0 (default 60),
-     *                                                                  apart from `timeout`, which covers API requests
+     * @param float|null                               $uploadTimeout   seconds for one storage PUT of an upload, above 0 (default 60 for an image,
+     *                                                                  120 for a document), apart from `timeout`, which covers API requests
      *
      * @throws \InvalidArgumentException for a timeout of 0 or less, a negative maxRetries or inlineThreshold, a base URL
      *                                   that is not https (http is accepted for localhost only), an httpClient that is not a
@@ -152,8 +162,10 @@ final class DecisionNode
         ?LoggerInterface $logger = null,
         ?int $inlineThreshold = null,
         ?\Closure $clock = null,
-        float $uploadTimeout = self::DEFAULT_UPLOAD_TIMEOUT,
+        ?float $uploadTimeout = null,
     ) {
+        $documentUploadTimeout = $uploadTimeout ?? self::DEFAULT_DOCUMENT_UPLOAD_TIMEOUT;
+        $uploadTimeout ??= self::DEFAULT_UPLOAD_TIMEOUT;
         $this->timeoutSet = $timeout !== null;
         $timeout ??= self::DEFAULT_TIMEOUT;
         if (!is_finite($timeout) || $timeout <= 0.0) {
@@ -185,7 +197,8 @@ final class DecisionNode
         $this->images = new Images($this->api, new UploadCache($clock), $this->inlineThreshold, $clock);
         $this->held = new Held();
         $this->batches = new Batches($this->api, $this->images, $this->model, $this->held);
-        $this->collections = new Collections($this->api, $this->images);
+        $this->documents = new Documents($this->api, $this->inlineThreshold, $documentUploadTimeout, $clock);
+        $this->collections = new Collections($this->api, $this->images, $this->documents, $this->timeoutSet);
         $this->usage = new UsageService($this->api);
         $this->keys = new Keys($this->api);
     }
@@ -661,6 +674,52 @@ final class DecisionNode
         }
         /** @var list<Image> $list */
         return $this->images->upload($list);
+    }
+
+    /**
+     * Uploads 1 to 16 documents ahead of time, whatever their type and size,
+     * and returns one upload id each, in order, for a later
+     * `Document::fromUploadId()`. Text in memory is uploaded too, as
+     * `text/markdown` or `text/plain` by its format. One presign with the
+     * knowledge purpose, then the PUTs side by side. An upload not named by
+     * a document within its hour expires. A knowledge upload needs a
+     * full-scope key.
+     *
+     * @param iterable<Document> $documents
+     *
+     * @return list<string>
+     *
+     * @throws \InvalidArgumentException for a document that was uploaded before
+     * @throws BadRequestError for more than 16 documents, or a file the API would refuse, before anything is sent
+     */
+    public function uploadDocuments(iterable $documents): array
+    {
+        return $this->uploadDocumentsAsync($documents)->wait();
+    }
+
+    /**
+     * @param iterable<Document> $documents
+     *
+     * @return PromiseInterface resolves with list<string>
+     */
+    public function uploadDocumentsAsync(iterable $documents): PromiseInterface
+    {
+        $list = [];
+        foreach ($documents as $document) {
+            $list[] = $document;
+        }
+        if ($list === [] || count($list) > LocalChecks::MAX_UPLOAD_FILES) {
+            // The upload call's own refusal, as the API answers it.
+            $message = sprintf('files: 1 to %d files, got %d.', LocalChecks::MAX_UPLOAD_FILES, count($list));
+
+            throw new BadRequestError($message, errorType: 'api_usage_error', reason: $message);
+        }
+        $files = [];
+        foreach ($list as $i => $document) {
+            $files[] = Documents::file($document, $i);
+        }
+
+        return $this->documents->upload($files);
     }
 
     /**

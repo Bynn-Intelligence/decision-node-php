@@ -11,8 +11,9 @@ namespace Bynn\DecisionNode;
  * booster's {@see AiGeneratedReading}s, the `face_detection` booster's
  * {@see FaceDetectionReading}s, the `face_recognition` booster's
  * {@see FaceRecognitionReading}s, the `ocr` booster's {@see OcrReading}s, Depth
- * Vision's (`bynn_depth`) {@see DepthReading}s and Segment Vision's
- * (`bynn_segment`) {@see SegmentReading}s. A reading of a booster this version of
+ * Vision's (`bynn_depth`) {@see DepthReading}s, Segment Vision's
+ * (`bynn_segment`) {@see SegmentReading}s and the `knowledge` booster's one
+ * {@see KnowledgeReading}, whose `image` is null. A reading of a booster this version of
  * the SDK does not know, or one with a field missing or of the wrong type, is
  * an {@see UnknownReading} holding its raw fields: the decision does not fail.
  */
@@ -44,6 +45,7 @@ abstract class Reading
             $booster === Booster::FACE_RECOGNITION && FaceRecognitionReading::wellFormed($raw) => new FaceRecognitionReading($raw),
             $booster === Booster::DEPTH && DepthReading::wellFormed($raw) => new DepthReading($raw),
             $booster === Booster::SEGMENT && SegmentReading::wellFormed($raw) => new SegmentReading($raw),
+            $booster === Booster::KNOWLEDGE && KnowledgeReading::wellFormed($raw) => new KnowledgeReading($raw),
             default => new UnknownReading($raw),
         };
     }

@@ -51,6 +51,13 @@ final class Booster implements \JsonSerializable
      */
     public const SEGMENT = 'bynn_segment';
 
+    /**
+     * Knowledge: the passages of the workspace's own documents (a collection
+     * of type `text`) that apply to the request. It needs a collection: see
+     * {@see Booster::knowledge()}.
+     */
+    public const KNOWLEDGE = 'knowledge';
+
     /** @var list<string>|null */
     public readonly ?array $images;
 
@@ -149,6 +156,49 @@ final class Booster implements \JsonSerializable
         }
 
         return new self(self::SEGMENT, $images, $require, $options);
+    }
+
+    /**
+     * The knowledge booster over one of the workspace's own knowledge bases
+     * (a `col_` id). Every other option is sent only when given, as given:
+     * `$query` replaces the query built from the request; `$scope` names
+     * the value of the collection's scope key; `$match` (metadata equality)
+     * and `$filter` (a filter tree) are JSON values passed through;
+     * `$topK` (0 to 20, 0 for the pinned documents only), `$maxTokens` (an
+     * integer or `"auto"`), `$pinned` (false leaves the pinned documents
+     * out), `$minScore` (0 to 1) and `$includeText` (each passage's text;
+     * a full-scope key only). `$require` true fails the request when the
+     * reading does not run over a ready knowledge base. The API checks every
+     * option.
+     *
+     * @param array<array-key, mixed>|object|null $match
+     * @param array<array-key, mixed>|object|null $filter
+     */
+    public static function knowledge(
+        string $collection,
+        ?string $query = null,
+        ?string $scope = null,
+        array|object|null $match = null,
+        array|object|null $filter = null,
+        ?int $topK = null,
+        int|string|null $maxTokens = null,
+        ?bool $pinned = null,
+        int|float|null $minScore = null,
+        ?bool $includeText = null,
+        bool $require = false,
+    ): self {
+        $options = ['collection' => $collection];
+        $given = [
+            'query' => $query, 'scope' => $scope, 'match' => $match, 'filter' => $filter, 'top_k' => $topK,
+            'max_tokens' => $maxTokens, 'pinned' => $pinned, 'min_score' => $minScore, 'include_text' => $includeText,
+        ];
+        foreach ($given as $key => $value) {
+            if ($value !== null) {
+                $options[$key] = $value;
+            }
+        }
+
+        return new self(self::KNOWLEDGE, null, $require ? true : null, $options);
     }
 
     /**
