@@ -2,6 +2,18 @@
 
 All notable changes to this package are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the package uses [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - Unreleased
+
+Implements version 1.5 of the DecisionNode SDK specification (`SPEC_VERSION` `"1.5"`): the image and video shares of the input tokens, so callers can bill or budget vision tokens at their own price, checked against conformance suite 1.28.
+
+### Added
+
+- `Usage::$imageTokens` and `Usage::$videoTokens` (`?int`): the share of `usage->inputTokens` that came from images and from videos, read from the `x-decisionnode-image-tokens` and `x-decisionnode-video-tokens` response headers on every call that returns a `Decision`, blocking and `Async` alike. Each is `null` when its header is absent (the server sends it only for a request with images or videos), empty, or not a whole number from 0 to 2^31 - 1 after trimming spaces; such a header never fails the decision. Both are read as sent, never added to or taken from another count and never priced. A batch result's decision reads `null` for both, since its line carries no such headers. `raw` is unchanged.
+
+### Changed
+
+- `SPEC_VERSION` is `"1.5"`.
+
 ## [0.4.0] - Unreleased
 
 Implements version 1.4 of the DecisionNode SDK specification (`SPEC_VERSION` `"1.4"`): knowledge.

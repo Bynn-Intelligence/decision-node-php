@@ -1405,6 +1405,8 @@ final class Suite
             'latency_ms' => $d->latencyMs,
             'usage' => [
                 'input_tokens' => $d->usage->inputTokens,
+                'image_tokens' => $d->usage->imageTokens,
+                'video_tokens' => $d->usage->videoTokens,
                 'output_tokens' => $d->usage->outputTokens,
                 'video_frames' => $d->usage->videoFrames,
                 'video_seconds' => $d->usage->videoSeconds,

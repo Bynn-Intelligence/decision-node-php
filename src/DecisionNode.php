@@ -48,10 +48,10 @@ use Psr\Log\LoggerInterface;
  */
 final class DecisionNode
 {
-    public const VERSION = '0.4.0';
+    public const VERSION = '0.5.0';
 
     /** The version of the DecisionNode SDK specification this client implements. */
-    public const SPEC_VERSION = '1.4';
+    public const SPEC_VERSION = '1.5';
 
     public const DEFAULT_BASE_URL = 'https://api.decisionnode.com';
 

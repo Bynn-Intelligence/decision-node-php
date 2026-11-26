@@ -4,7 +4,7 @@
 
 The PHP client for the [DecisionNode](https://decisionnode.com) API: ask yes-or-no, choice, score and number questions about any text, JSON, image or video, point to a spot or draw a box in an image, and get probabilities back. One-off decisions, live sessions that answer a stream of frames, and batches for less (Flash 50% off the live price, DecisionNode MoE 30% off). Boosters add specialist readings of your images (an age, whether a picture was AI-generated) to a decision as evidence, and your own fine-tuned models are called by name.
 
-Implements version 1.3 of the DecisionNode SDK specification, which the package states as `DecisionNode::SPEC_VERSION` (also `Bynn\DecisionNode\SPEC_VERSION`). Requires PHP 8.2 or later.
+Implements version 1.5 of the DecisionNode SDK specification, which the package states as `DecisionNode::SPEC_VERSION` (also `Bynn\DecisionNode\SPEC_VERSION`). Requires PHP 8.2 or later.
 
 ## Install
 
@@ -142,7 +142,9 @@ Answers are read by question id, `$d['route']` or `$d->answers['route']`. An ans
 | `touches_production` | truth | Does this action change a production system, production data or anything customers use? | |
 | `verdict` | choice | Should this action run as it is, wait for a person to confirm it, or be blocked? | `allow` "safe to run without asking", `confirm` "a person should confirm it first", `block` "should not run" |
 
-A `Decision` has `answers`, `model` (the resolved model version), `usage->inputTokens`, `usage->outputTokens`, `usage->videoFrames` and `usage->videoSeconds` (for a request with videos, `null` otherwise), `warnings` (a list of strings, empty unless the API sent some), `evidence`, `usage->boosterTokens` and `usage->boosters` (for a request with boosters, `null` otherwise; see [Boosters](#boosters)), `usage->cost` (what the answer cost in USD, exactly as the API sent it: `usd`, its parts `modelUsd` and `boostersUsd`, and `freeTier`; read `usd` rather than adding up the parts; also on a session's open and in batch results; `null` when absent), `requestId`, `latencyMs` (the server's), `safety` and `raw` (the parsed body).
+A `Decision` has `answers`, `model` (the resolved model version), `usage->inputTokens`, `usage->imageTokens` and `usage->videoTokens` (see below), `usage->outputTokens`, `usage->videoFrames` and `usage->videoSeconds` (for a request with videos, `null` otherwise), `warnings` (a list of strings, empty unless the API sent some), `evidence`, `usage->boosterTokens` and `usage->boosters` (for a request with boosters, `null` otherwise; see [Boosters](#boosters)), `usage->cost` (what the answer cost in USD, exactly as the API sent it: `usd`, its parts `modelUsd` and `boostersUsd`, and `freeTier`; read `usd` rather than adding up the parts; also on a session's open and in batch results; `null` when absent), `requestId`, `latencyMs` (the server's), `safety` and `raw` (the parsed body).
+
+`usage->imageTokens` and `usage->videoTokens` are the shares of `usage->inputTokens` that came from images and from videos, read from the `x-decisionnode-image-tokens` and `x-decisionnode-video-tokens` headers, so you can bill or budget vision tokens at your own price. Both are `?int`: `imageTokens` is `null` for a request without images and `videoTokens` is `null` for a request without videos (the server sends each header only when its share is above 0), and either is `null` when its header is not a whole number from 0 to 2^31 - 1. They are read as sent: the client never adds them to, or takes them from, another count, and never prices them. A batch result's decision reads `null` for both.
 
 ```php
 $answer = $dn->check('Refund me now or I cancel.', 'Is the customer asking for a refund?');
@@ -781,7 +783,7 @@ composer test          # unit tests
 composer analyse       # static analysis
 ```
 
-The conformance tests run the language-neutral DecisionNode conformance cases (suite 1.27) against their mock server, every case once through the blocking methods and once through their `Async` forms (sessions are blocking in both runs): set `DECISIONNODE_CONFORMANCE_DIR` to the suite's directory and run `composer conformance`. Without that variable the conformance tests fail; they never skip. CI checks the suite out at a pinned commit, set once as `CONFORMANCE_REF` in `.github/workflows/ci.yml`, and every action in the workflow is pinned to a commit SHA.
+The conformance tests run the language-neutral DecisionNode conformance cases (suite 1.28) against their mock server, every case once through the blocking methods and once through their `Async` forms (sessions are blocking in both runs): set `DECISIONNODE_CONFORMANCE_DIR` to the suite's directory and run `composer conformance`. Without that variable the conformance tests fail; they never skip. CI checks the suite out at a pinned commit, set once as `CONFORMANCE_REF` in `.github/workflows/ci.yml`, and every action in the workflow is pinned to a commit SHA.
 
 ## License
 
